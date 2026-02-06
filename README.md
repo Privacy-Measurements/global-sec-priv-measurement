@@ -1,5 +1,6 @@
 # ``Same Click, Different Risks'': Geography as a Hidden Factor in Web Privacy and Security
 
+
 This repository contains the code and data-processing pipeline used to measure **client-side security and privacy behaviors of websites** using PageGraph instrumentation.
 
 The repository includes the following modules:
@@ -34,6 +35,13 @@ This directory contains all artifacts related to URL sourcing and catalog constr
   - VPN vs. physical vantage point ablation experiments.
 
 
+To build the bukcets, use: 
+
+```bash
+python build_buckets.py
+```
+
+---
 
 ### 2. `crawling/` — PageGraph-based Crawler
 
@@ -109,5 +117,6 @@ analysis/
 The crawling and preprocessing pipeline requires environment configuration via a `.env` file.
 
 ### Copy .env_template into .env and update it
+
 
 
