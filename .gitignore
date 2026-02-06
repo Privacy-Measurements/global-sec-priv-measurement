@@ -1,0 +1,125 @@
+# Virtual environments
+venv/
+py310env/
+
+# Crawling temporary/profile folders
+crawling/precrawling_browser_profile*/
+crawling/precrawling_validation_browser_profile*/
+
+# Pagegraph Brave build folder (ignore most files, keep important ones)
+crawling/resources/pagegraph_brave_build/*
+!crawling/resources/pagegraph_brave_build/README.md
+!crawling/resources/pagegraph_brave_build/.env
+!crawling/resources/pagegraph_brave_build/Tracked_APIs.py
+!crawling/resources/pagegraph_brave_build/Tracked_APIs_default.py
+!crawling/resources/pagegraph_brave_build/Tracked_APIs_old.py
+
+# Data folders
+data/snapshots/*
+!data/snapshots/.keep
+analysis/notebooks/examples/*
+analysis/notebooks/utils/*
+analysis/processed_data/*
+!analysis/processed_data/.keep
+data/files_to_analyze/*
+!data/files_to_analyze/.keep
+
+# Environment/config files
+**/.env
+*.env
+
+
+# Node modules
+crawling/node_modules/
+
+# Browser / proxy temp files
+crawling/.http-mitm-proxy/
+.http-mitm-proxy/
+
+# Logs
+logs/
+*.log
+crawling/*.log
+crawling/crawling.log
+npm-debug.log*
+crawling/npm-debug.log*
+yarn-debug.log*
+crawling/yarn-error.log
+lerna-debug.log*
+.pnpm-debug.log*
+*/.ipynb_checkpoints
+
+
+# npm / yarn caches
+.npm
+.crawling/.npm/
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+.pnp.*
+
+# Parcel / Next.js / Nuxt / VuePress / Docusaurus / Serverless
+.cache/
+.parcel-cache/
+.next/
+out/
+.nuxt/
+dist/
+.temp/
+.docusaurus/
+.serverless/
+
+# TypeScript / Microbundle / REPL / Build caches
+*.tsbuildinfo
+.rpt2_cache/
+.rts2_cache_cjs/
+.rts2_cache_es/
+.rts2_cache_umd/
+.node_repl_history
+
+# Coverage / test reports
+coverage/
+.nyc_output/
+lib-cov/
+*.lcov
+
+# Misc build / dependency directories
+bower_components/
+jspm_packages/
+web_modules/
+.lock-wscript
+
+# Python compiled files
+*/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# PyInstaller
+*.manifest
+*.spec
+*.cover
+*.py,cover
+
+
+
+# IDE / editor
+.DS_Store
+.vscode/
+.idea/
+crawling/.DS_Store
+crawling/.vscode/
+crawcrawlingler/.idea/
+
+# Runtime / PID files
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Misc
+*.out
+*.sh
+
+
