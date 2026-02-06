@@ -20,6 +20,8 @@ const baseCrawlingArgs = {
     'executablePath': browserExeFilePath,
     'seconds': measurementDelay,
     'userAgent': undefined,
+    'storeHar': true,             
+    'storeHarBody': false,        
     'crawlDuplicates': false,
     'screenshot': saveScreenshots,
     'storeHar': storeHar,
@@ -141,6 +143,10 @@ const crawlSite = async (site, urls, snapshotDirPath, logFilePath, profileDirPat
     crawlingArgs['proxyServer'] = `http://127.0.0.1:${proxyPort + coreIndex}`;
     crawlingArgs['outputPath'] = snapshotDirPath;
     crawlingArgs['existingUserDataDirPath'] = profileDirPath;
+
+    const harDir = path.join(snapshotDirPath, 'har');
+    await fs.mkdir(harDir, { recursive: true });
+    crawlingArgs.harDir = harDir; 
 
     let successFullCrawls = [];
 
