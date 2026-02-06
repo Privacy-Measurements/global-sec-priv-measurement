@@ -5,7 +5,7 @@ This repository contains the code and data-processing pipeline used to measure *
 
 The repository includes the following modules:
 - Construction of global, country-coded, and country-specific website catalogs.
-- Crawling websites using a PageGraph-instrumented browser.
+- Crawling websites using a PageGraph-instrumented browser. 
 - Preprocessing crawl artifacts into structured databases.
 - Large-scale analysis of tracking, fingerprinting, user identification.
 
@@ -87,7 +87,7 @@ npm run pagegraph-crawl-using-given-urls "<PATH_TO_URL_FILE>"
 
 The crawler:
 - launches PageGraph-instrumented browser instances,
-- records execution graphs (`.graphml.gz`)
+- records execution graphs (`.graphml.gz`) and HAR files (.har)
 
 
 ---
@@ -198,3 +198,4 @@ DB_NAME=XXXX
 5. Run analysis scripts (`analysis/`)
 
 ---
+
