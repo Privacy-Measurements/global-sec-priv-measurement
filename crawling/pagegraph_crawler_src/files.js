@@ -84,8 +84,14 @@ const createHARPath = (args, url) => {
 
 export const writeHAR = async (args, url, har, logger) => {
     try {
-        const outputFilename = createHARPath(args, url);
-        await writeFile(outputFilename, JSON.stringify(har, null, 4));
+        const safeUrl = url.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+        const harPath = path.join(
+            args.harDir ?? args.outputPath,
+            `${safeUrl}.har`
+        );
+            
+        await fs.writeFile(harPath, JSON.stringify(har, null, 2));
+        logger.info(`HAR written to ${harPath}`);
     }
     catch (err) {
         logger.error('saving HAR file: ', String(err));
