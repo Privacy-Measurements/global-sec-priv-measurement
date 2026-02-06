@@ -279,9 +279,8 @@ export const doCrawl = async (args, redirectChain, logger) => {
             const responseBodies = new Map();
             
             // Prepare HAR collection if requested
-            if (args.storeHar) {
-                await prepareHARGenerator(client, networkEvents, pageEvents, args.storeHarBody, responseBodies, logger); 
-            }
+            await prepareHARGenerator(client, networkEvents, pageEvents, true, responseBodies, logger); 
+            
 
             // Crash handling
             client.on('Target.targetCrashed', (event) => {
