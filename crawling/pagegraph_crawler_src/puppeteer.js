@@ -50,6 +50,7 @@ export const puppeteerConfigForArgs = async (args) => {
     // browser launch flags
     const chromeArgs = [
         '--ash-no-nudges', //Disables pop-up suggestions for chrome features
+    //    '--deny-permission-prompts', // Blocks websites from asking for permissions (location, camera, microphone, notifications)
         '--disable-brave-update', //Stops Brave from automatically checking for or installing updates.
         '--disable-breakpad', //Disables the crash reporting system that sends crash data to Brave.
         '--disable-component-extensions-with-background-pages', //Stops extensions that run in the background from starting.
@@ -58,11 +59,13 @@ export const puppeteerConfigForArgs = async (args) => {
         '--disable-first-run-ui', //Skips Brave’s initial setup or welcome screens.
         '--disable-infobars', //Hides small info bars at the top of the browser window (like “Chrome is being controlled by automated test software”).
         '--disable-ipc-flooding-protection', //Turns off protections against excessive inter-process communication (IPC) between browser processes.
+    //    '--disable-notifications',
         '--disable-renderer-backgrounding', //Prevents background tabs from being “paused.”
         '--disable-site-isolation-trials', //Disables experimental “site isolation” features that separate sites into different processes. 
         '--disable-sync', //Turns off syncing of bookmarks, passwords, history, etc.
         '--enable-features=PageGraph',
         '--ignore-certificate-errors', //Ignores SSL/TLS certificate warnings.
+   //    '--mute-audio', //Silences all audio in the browser.
         '--no-first-run',
         '--no-sandbox', 
         '--disable-setuid-sandbox',

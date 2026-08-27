@@ -38,12 +38,20 @@ class FrameReport(ReportBase):
     blink_id: BlinkId
 
 
+#@dataclass
+#class DOMElementReport(ReportBase):
+#    id: PageGraphId
+#    tag: str
+#    attrs: dict[str, JSONAble] | None = None
+
+# PATCH
 @dataclass
 class DOMElementReport(ReportBase):
     id: PageGraphId
     tag: str
     attrs: dict[str, JSONAble] | None = None
-
+    parent_id: PageGraphId | None = None
+    parent_tag: str | None = None
 
 @dataclass
 class JSStructureReport(ReportBase):

@@ -1,201 +1,146 @@
-# “Same Click, Different Risks”: Geography as a Hidden Factor in Web Privacy and Security
+# Same Click, Different Risks: Geography as a Hidden Factor in Web Privacy and Security
 
-This repository contains the code and data-processing pipeline used to measure **client-side security and privacy behaviors of websites** using PageGraph instrumentation.
-
-
-The repository includes the following modules:
-- Construction of global, country-coded, and country-specific website catalogs.
-- Crawling websites using a PageGraph-instrumented browser. 
-- Preprocessing crawl artifacts into structured databases.
-- Large-scale analysis of tracking, fingerprinting, user identification.
-
----
-
-## Repository Structure
-
-```
-analysis/        # Analysis scripts (Python)
-crawling/        # PageGraph-based crawler (Node.js)
-crux_urls/       # URL collection and bucket construction
-pre_processing/  # Graph and database preprocessing
-README.md
-```
-
-## 1. `crux_urls/` — Website Catalog Construction
-
-This directory contains all artifacts related to URL sourcing and website catalog construction.
+This repository contains the artifacts for the paper "Same Click, Different Risks: Geography as a Hidden Factor in Web Privacy and Security". It contains the website catalogs for each country and the source code used to construct them, the measurement and crawling framework, the preprocessing pipeline, and the analysis scripts.
 
 
-### Contents
+## Repository Layout
 
-- **`crawl_raw_urls/`**  
-  Raw top-site lists collected from the Chrome UX Report (CrUX) snapshot dated **August 18**.
+- `site_catalogs_construction/`: catalog construction, D2 catalog validation, and CRuX inputs.
+- `crawling/`: crawling and PageGraph instrumentation.
+- `pre_processing/`: GraphML processing, database creation, and feature extraction.
+- `analysis/`: Comparative analyses of S&P measures.
 
-- **`suffixes/`**  
-  Lists of country-code and geographic TLDs used to construct regional catalogs (e.g., `.de`, `.ae`, `.berlin`, `.dubai`).
+## 1. Website Catalog Construction
 
-- **`buckets/`**  
-  Final website catalogs used in the study:
-  - **D1**: Globally popular websites  
-  - **D2**: Country-coded versions of global websites  
-  - **D3**: Country-specific popular websites  
+Our study considers three catalogs of websites:  
 
-- **`urls_to_crawl/`**  
-  URL lists used for:
-  - global catalog crawls,
-  - VPN vs. physical vantage-point ablation experiments.
+- D1: globally popular domains.
+- D2: country-coded counterparts of globally popular domains.
+- D3: country-specific popular domains.
+
+### Relevant code and assets
+
+- `site_catalogs_construction/crux_raw_urls/`: raw CRuX input dumps extracted for each country and the global dataset. 
+- `site_catalogs_construction/D2_catalog_validation/`: validation for D2 sites using favicon similarity and TLS records.
+- `site_catalogs_construction/catalogs/`: final website catalog artifacts. This folder contains the JSON files for D1, D2, and D3, crawl-ready URL CSVs, and the D2-to-global mappings.
 
 
-### Building Website Catalogs
+## 2. Crawling and PageGraph Instrumentation
 
-Place CrUX URLs in raw_crux_urls/ and run 
+Takes a CSV of sites to crawl as input, and records the resulting artifacts for each site: Pagegraphs, Har files, and screenshots.
+
+### Run command
 
 ```bash
-cd crux_urls
-python build_buckets.py
+python crawling/controller.py site_catalogs_construction/catalogs/urls_to_crawl/D1.csv
 ```
 
-This script produces finalized URL lists under `buckets/`.
+The controller resolves the current country from the machine IP and writes crawl artifacts under:
 
+```text
+data/snapshots/<country>/<bucket>/<site>/<attempt_id>/
+```
 
----
+An SQLite database is created as `running_<csv_name>.db` to track crawl progress and resume interrupted jobs.
 
-## 2. `crawling/` — PageGraph-based Crawler
+### Docker image for crawls
 
-This directory contains the **crawling infrastructure** used to visit websites with a PageGraph-instrumented Brave browser.
+The repository includes scripts to build a Docker image for running the crawler on  different machine. The image is defined in `Dockerfile` and bundles the dependencies required by PageGraph-based crawling, including Node.js, Python, Xvfb, and browser libraries.
 
-### Requirements
-
-- Node.js **v20+**
-- npm **v10+**
-- A local PageGraph-enabled Brave browser build
-
-### Installation
+The script `Docker_build.sh` builds and saves the image under `global-privacy-ssh:latest`.
 
 ```bash
-cd crawling
-npm install
+./Docker_build.sh
 ```
 
-### Running Crawls
+The image can then be transferred and loaded on another machine:
 
 ```bash
-npm run pagegraph-crawl-using-given-urls "<PATH_TO_URL_FILE>"
+docker load -i global-privacy-ssh-latest.tar
 ```
 
-- `<PATH_TO_URL_FILE>` should point to a file under `crux_urls/`
-
-The crawler:
-- launches PageGraph-instrumented browser instances,
-- records execution graphs (`.graphml.gz`) and HAR files (.har)
-
-
----
-
-## 3. `pre_processing/` — Crawl Artifact Processing
-
-This module converts raw PageGraph outputs into structured formats suitable for analysis.
-
-```
-pre_processing/
-├── process_graphml/    # Converts .graphml → JSON
-└── process_database/   # Inserts processed data into SQL database
-```
-
-### Components
-
-- **`process_graphml/`**
-  - Extract `.graphml.gz` files.
-  - Parses `.graphml` files.
-  - Extracts scripts, requests, js_calls, cookies, and html_elements from `.graphml` files
-  - Outputs JSON files
-
-- **`process_database/`**
-  - Reads processed JSON files
-  - Inserts data into a relational SQL database
-  - Creates tables for according the schema in pre_processing/process_database/create_db.py
-
-   
----
-
-## 4. `analysis/` — Security & Privacy Analysis
-
-This directory contains **Python analysis scripts** that operate over the populated database.
-
-```
-analysis/
-├── tracking/
-├── fingerprinting/
-├── user_identification/
-```
-
-Python **3.9** is required.
-
-## System Requirements
-
-- **System Architecture**: Only x86_64 systems are supported; ARM-based machines are not supported.
-- **Operating System**: Ubuntu 20.04+ recommended
-- **Node.js**: v20+
-- **npm**: v10+
-- **Python**: 3.9
-- **Database**: MySQL or compatible SQL database
-
----
-
-
-## Environment Configuration
-
-The crawling and preprocessing pipeline requires environment configuration via a `.env` file.
-
-### Step 1: Create `.env`
+Once loaded, the environment can be started as an execution node:
 
 ```bash
-cp .env_template .env
+docker run --rm -it -p 2222:22 --name global-privacy-crawler global-privacy-ssh:latest
 ```
 
-### Step 2: Configure `.env`
+
+## 3. Preprocessing of crawl artifacts
+
+Data Preprocessing consists of converting crawl artifacts into a SQL database for downstream analysis. It organized inthree steps. 
 
 
-#### Crawl Configuration
+### 3.1 Processing Graph files
 
-```env
-#### Crawl Configuration ####
+This step takes the raw PageGraph outputs stored in data/ and converts them into structured JSON records.
 
-BROWSER_FOR_PRECRAWL_PATH="./resources/pagegraph_brave_build/Static/brave"
-BROWSER_PATH="./resources/pagegraph_brave_build/Static/brave"
+What it does:
+- scans site directories under an input directory,
+- extracts compressed `.gz` GraphML payloads,
+- runs the PageGraph query CLI over each GraphML file,
+- collects cookies, scripts, requests, JS calls, HTML elements, and related metadata,
 
-MAX_CORES=12
-PROXY_PORT=8901
+How to run it:
 
-CRAWLING_DEPTH=5
-SAVE_SCREENSHOTS=true
-
-MEASUREMENT_DELAY=25
-PAGEGRAPH_TIMEOUT=20
-NAVIGATION_TIMEOUT=60
+```bash
+python pre_processing/process_graphml/main.py \
+  --base-dir data/snapshots/DE/country_coded
 ```
 
-#### Database Configuration
+It produces a combined JSON file for a country/site_catalog, saved under  `data/files_to_analyze/`.
 
-```env
-#### Database Configuration ####
 
-DB_HOST=XXXX
-DB_USER=XXXX
-DB_PASSWORD=XXXX
-DB_NAME=XXXX
+### 3.2 Creating and populating the database
+
+This step creates the relational database and uploads the ∂ata from the JSON files.
+
+What it does:
+- Reads MySql credentials from the .env file,
+- creates the target MySQL database if it does not exist,
+- builds the required tables for crawl sessions, cookies, storage, scripts, requests, JS calls, HTML elements, HAR requests, and tracking classification,
+
+How to run it:
+
+```bash
+python pre_processing/process_database/create_db.py
 ```
 
----
+Then populate the database with the processed crawl JSONL file:
+
+```bash
+python pre_processing/process_database/insert_file_into_db.py data/files_to_analyze/XX.jsonl.zst
+```
 
 
-## Typical Workflow
+### 3.3 Feature extraction
 
-1. Build website catalogs (`crux_urls/`)
-2. Crawl websites using PageGraph (`crawling/`)
-3. Process execution graphs (`pre_processing/process_graphml`)
-4. Insert data into SQL database (`pre_processing/process_database`)
-5. Run analysis scripts (`analysis/`)
+This final step derives privacy and security features from the raw crawl data stored in the database. It adds new columns and labels for identifiers, tracking behavior, and fingerprinting signals.
 
----
+What it does:
+- reads the processed crawl records from the database,
+- extracts cookie and storage values,
+- identifies user identifiers and tracking-related requests,
+- analyzes JS calls for fingerprinting techniques,
+- labels sessions and requests based on whether they match tracking or fingerprinting patterns.
+
+How to run it:
+
+```bash
+python pre_processing/process_database/pre_process.py
+```
+
+
+## 4. Analysis
+
+The analysis folder contains the descriptive and statistical comparison scripts we use to study how privacy and security signals vary across location and site catalogs.
+
+
+
+
+## Data and Environment Notes
+
+- The repository expects a `.env` configuration file. Use the same structure as in `.env_template`.
+- The raw crawl data is large and not included in this repository.
+
 

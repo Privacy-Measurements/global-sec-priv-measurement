@@ -8,7 +8,7 @@ const __dirname = path.dirname(__filename);
 
 export const crawlerDirPath = path.dirname(__dirname);
 export const shieldsDownChromiumProfileTemplate = path.join(crawlerDirPath, 'resources/shields-down-profile/')
-export const consentExtensionPath = path.join(crawlerDirPath, 'resources/consent_banner/consent.js'); 
+export const consentExtensionPath = path.join(crawlerDirPath, 'resources/consent_banner/autoconsent.adapter.js'); 
 export const logFilePath = path.join(crawlerDirPath, 'crawling.log')
 export const rootDirPath = path.dirname(crawlerDirPath);
 export const dataDirPath = path.join(rootDirPath, 'data');

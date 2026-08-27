@@ -1,7 +1,6 @@
 
-import threading, pymysql, hashlib, json, re, math
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
-from typing import Dict, Any, Union
+import pymysql, json
+from concurrent.futures import ProcessPoolExecutor
 from urllib.parse import parse_qs, unquote_plus
 from config import db_params
 
@@ -16,6 +15,7 @@ TABLE_TO_JS_CALL = {
 ignore_keys = {"Symbol(Symbol.toStringTag)", "length"}
 
 MAX_STORAGE_VALUE_LENGTH = 65000  # safe limit for TEXT columns
+MAX_URL_LENGTH = 30000  # safe limit for TEXT caller_url
 
 
 def batch_insert(cursor, table_name, all_results, thread_id):
@@ -35,6 +35,10 @@ def batch_insert(cursor, table_name, all_results, thread_id):
         if len(value_bytes) > MAX_STORAGE_VALUE_LENGTH: # skip oversized values
             continue  
 
+        caller_url = r["caller_url"]
+        if caller_url and len(caller_url) > MAX_URL_LENGTH:
+            caller_url = caller_url[:MAX_URL_LENGTH]
+
         data.append((
             r["session_id"],
             r["storage_key"],
@@ -42,7 +46,7 @@ def batch_insert(cursor, table_name, all_results, thread_id):
             r["caller_id"],
             r["caller_type"],
             r["caller_hash"],
-            r["caller_url"],
+            caller_url,
         ))
 
     if not data:

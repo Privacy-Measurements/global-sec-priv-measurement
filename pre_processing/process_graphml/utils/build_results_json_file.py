@@ -5,6 +5,105 @@ from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
 
+
+RESULTS_OUTPUT_FILENAME = "results.json"
+
+
+def derive_combined_output_name(base_dir):
+    category = os.path.basename(os.path.normpath(base_dir)).lower()
+    country = os.path.basename(os.path.dirname(os.path.normpath(base_dir))).lower()
+
+    if not category or not country:
+        raise RuntimeError(f"Cannot derive output name from base_dir={base_dir}")
+
+    return f"{country}_{category}.jsonl"
+
+
+def _list_immediate_subdirs(path):
+    try:
+        items = os.listdir(path)
+    except FileNotFoundError:
+        return []
+
+    out = []
+    for name in items:
+        full = os.path.join(path, name)
+        if os.path.isdir(full):
+            out.append(full)
+    return sorted(out)
+
+
+def _attempt_sort_key(path):
+    name = os.path.basename(path)
+    if name.isdigit():
+        return (0, f"{int(name):09d}")
+    return (1, name)
+
+
+def _iter_site_dirs(base_dir):
+    return _list_immediate_subdirs(base_dir)
+
+
+def _iter_attempt_dirs(site_dir):
+    return sorted(_list_immediate_subdirs(site_dir), key=_attempt_sort_key)
+
+
+def _write_json(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2)
+
+
+def combine_country_category_results(base_dir, output_path):
+    country = os.path.basename(os.path.dirname(os.path.normpath(base_dir))).upper()
+    category = os.path.basename(os.path.normpath(base_dir))
+    site_dirs = _iter_site_dirs(base_dir)
+    total_sites = len(site_dirs)
+    written_sites = 0
+
+    SKIP_ALL = 1
+
+    out_dir = os.path.dirname(output_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    tmp_output_path = f"{output_path}.tmp"
+    with open(tmp_output_path, 'w', encoding='utf-8') as out:
+        for site_dir in site_dirs:
+
+            site_name = os.path.basename(site_dir)
+            site_attempts = {}
+
+            for attempt_dir in _iter_attempt_dirs(site_dir):
+                attempt_id = os.path.basename(attempt_dir)
+                results_path = os.path.join(attempt_dir, RESULTS_OUTPUT_FILENAME)
+                if not os.path.isfile(results_path):
+                    continue
+
+                with open(results_path, 'r', encoding='utf-8') as f:
+                    attempt_results = json.load(f)
+
+                attempt_items = attempt_results.get("data", []) if isinstance(attempt_results, dict) else []
+                site_attempts[attempt_id] = attempt_items
+
+            if not site_attempts:
+                continue
+
+            line_obj = {
+                "country": country,
+                "category": category,
+                "site": site_name,
+                "data": site_attempts,
+            }
+            out.write(json.dumps(line_obj) + "\n")
+
+            written_sites += 1
+            print(f"added site {site_name}, {written_sites}/{total_sites}")
+
+    os.replace(tmp_output_path, output_path)
+    print(f"Combine finished: wrote {written_sites} JSONL rows to {output_path}")
+    return output_path
+
 def process_single_etld(etld_dir, base_directory, output_file_name):
 
     

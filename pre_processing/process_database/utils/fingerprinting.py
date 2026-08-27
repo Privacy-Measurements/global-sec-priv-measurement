@@ -1,6 +1,6 @@
 
-import threading, pymysql, json
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+import pymysql, json
+from concurrent.futures import ProcessPoolExecutor
 from urllib.parse import parse_qs, unquote_plus
 from collections import defaultdict
 from config import db_params

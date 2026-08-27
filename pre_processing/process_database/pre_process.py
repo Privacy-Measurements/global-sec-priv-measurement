@@ -4,8 +4,9 @@ import subprocess
 
 scripts = [
     "utils/extract_session_and_local_storage_from_js_calls.py",
-    "utils/parse_storage_values.py"
+    "utils/parse_storage_values.py",
     "utils/identify_uid_values.py",
+    "utils/fingerprinting.py",
     "utils/label_tracking_requests.py",
 #    "utils/cname_resolution.py"
 ]

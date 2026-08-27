@@ -6,7 +6,12 @@ from dotenv import load_dotenv
 
 
 load_dotenv()
-NUM_THREADS = int(os.getenv("NUM_THREADS_PREPROCESSING", 1))  
+NUM_THREADS = int(
+    os.getenv(
+        "NUM_THREADS_EXTRACT",
+        os.getenv("NUM_THREADS_PREPROCESSING", "64"),
+    )
+)
 
 def extract_gz_file(gz_path):
     """Extract a single .gz file."""

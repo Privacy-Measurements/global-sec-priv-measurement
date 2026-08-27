@@ -1,0 +1,72 @@
+[
+    {
+        "origin": "https://www.nytimes.com",
+        "rank": 1000,
+        "fqdn": "www.nytimes.com",
+        "hostname": "nytimes",
+        "suffix": "com"
+    },
+    {
+        "origin": "https://chatgpt.com",
+        "rank": 1000,
+        "fqdn": "chatgpt.com",
+        "hostname": "chatgpt",
+        "suffix": "com"
+    },
+    {
+        "origin": "https://twitter.com",
+        "rank": 5000,
+        "fqdn": "twitter.com",
+        "hostname": "twitter",
+        "suffix": "com"
+    },
+    {
+        "origin": "https://toku.yahoo.co.jp",
+        "rank": 5000,
+        "fqdn": "toku.yahoo.co.jp",
+        "hostname": "yahoo",
+        "suffix": "co.jp"
+    },
+    {
+        "origin": "https://www.amazon.ie",
+        "rank": 5000,
+        "fqdn": "www.amazon.ie",
+        "hostname": "amazon",
+        "suffix": "ie"
+    },
+    {
+        "origin": "https://www.aljazeera.net",
+        "rank": 5000,
+        "fqdn": "www.aljazeera.net",
+        "hostname": "aljazeera",
+        "suffix": "net"
+    },
+    {
+        "origin": "https://www.audible.com",
+        "rank": 5000,
+        "fqdn": "www.audible.com",
+        "hostname": "audible",
+        "suffix": "com"
+    },
+    {
+        "origin": "https://www.auchan.fr",
+        "rank": 5000,
+        "fqdn": "www.auchan.fr",
+        "hostname": "auchan",
+        "suffix": "fr"
+    },
+    {
+        "origin": "https://www.airbnb.fr",
+        "rank": 5000,
+        "fqdn": "www.airbnb.fr",
+        "hostname": "airbnb",
+        "suffix": "fr"
+    },
+    {
+        "origin": "https://www.washingtonpost.com",
+        "rank": 5000,
+        "fqdn": "www.washingtonpost.com",
+        "hostname": "washingtonpost",
+        "suffix": "com"
+    }
+]

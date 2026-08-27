@@ -1,0 +1,11 @@
+# Python/Node caches and local environments
+venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/node_modules
+
+# Local data/output not needed to build the image
+data
+processed_data
+

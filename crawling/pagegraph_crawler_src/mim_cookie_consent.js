@@ -2,6 +2,7 @@ import { consentExtensionPath } from './paths.js';
 import { promisify } from 'util';
 import { exec as execCallback } from 'child_process';
 import { Proxy } from "http-mitm-proxy";
+import { build } from 'esbuild';
 import Promise from 'bluebird';
 import fs from 'fs';
 import path from 'path';
@@ -9,13 +10,28 @@ import path from 'path';
 
 const password = ''
 
-const consentScript = fs.readFileSync(path.resolve(consentExtensionPath), 'utf-8');
-const jsToInject = `<script>(async () => {\n${consentScript}\n})();</script>`;
+const buildInjectedConsentScript = async () => {
+  const result = await build({
+    entryPoints: [path.resolve(consentExtensionPath)],
+    bundle: true,
+    write: false,
+    format: 'iife',
+    platform: 'browser',
+    target: ['es2021'],
+    logLevel: 'silent',
+    minify: true,
+    legalComments: 'none',
+  });
+
+  return result.outputFiles[0].text.replace(/<\/script/gi, '<\\/script');
+};
+
+const consentScript = await buildInjectedConsentScript();
+const jsToInject = `<script>${consentScript}</script>`;
 
 
 
-const exec = promisify(execCallback);
-const execPromise = promisify(exec);
+const execPromise = promisify(execCallback);
 
 
 /**
@@ -84,7 +100,7 @@ export const setupProxy = async (port) => {
 
     callback();
     });
-    
+    return proxy;
 };
 
 

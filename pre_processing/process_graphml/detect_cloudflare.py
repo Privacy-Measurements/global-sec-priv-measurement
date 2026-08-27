@@ -221,6 +221,7 @@ def process_single_site(args):
     triplets = find_valid_triplets(site_dir)
 
     if not triplets:
+        print('hnaaa', site_dir)
         return []
 
     print(f"[INFO] {etld}: {len(triplets)} matching crawl files")
@@ -265,7 +266,7 @@ def process(base_path: str,
     all_site_dirs = iter_site_dirs(base_path)
     print(f"[INFO] Found {len(all_site_dirs)} total site directories.")
 
-    # filter out already-treated sites
+
     to_process = [
         d for d in all_site_dirs
         if os.path.basename(d) not in treated_sites

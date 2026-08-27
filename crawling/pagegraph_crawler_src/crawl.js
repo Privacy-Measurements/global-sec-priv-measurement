@@ -9,14 +9,6 @@ import {pageGraphTimeout, navigationTimeout} from './settings.js';
 import sleep from 'await-sleep';
 
 
-function withTimeout(promise, ms, errorMessage = "Timeout exceeded") {
-    return Promise.race([
-        promise,
-        new Promise((_, reject) =>
-            setTimeout(() => reject(new Error(errorMessage)), ms)
-        )
-    ]);
-}
 
 
 // Repeatedly checks a condition until either:
@@ -45,7 +37,7 @@ const waitUntilUnless = (secs, unlessFunc, intervalMs = 500) => {
 // Prepares Chrome DevTools Protocol (CDP) listeners for HAR generation.
 // It captures network and page events, and optionally stores response bodies.
 const prepareHARGenerator = async (client, networkEvents, pageEvents, storeHarBody, responseBodies, logger) => {
-    await client.send('Page.enable');
+   // await client.send('Page.enable');
     await client.send('Network.enable');
 
     // Listen to network-related events
@@ -93,7 +85,6 @@ const prepareHARGenerator = async (client, networkEvents, pageEvents, storeHarBo
     });
 };
 
-
 // Generates a page graph using Chrome DevTools protocol.
 // Waits for seconds, then requests `Page.generatePageGraph`.
 // Times out if the page graph capture takes too long.
@@ -120,7 +111,6 @@ const generatePageGraph = async (seconds, page, client, waitFunc, logger) => {
 
       
 };
-
 
 // Converts collected network/page events into a HAR file and writes it to disk.
 const exportHAR = async(networkEvents, pageEvents, responseBodies, args, urlToCrawl, logger) => {
@@ -185,7 +175,6 @@ const exportHARTimeOut = async(networkEvents, pageEvents, responseBodies, args, 
 }
 
 
-
 function normalizeUrl(url) {
   try {
     const u = new URL(url);
@@ -228,14 +217,14 @@ export const doCrawl = async (args, redirectChain, logger) => {
     const url = args.url
     const normalizedUrl = normalizeUrl(url);
 
-
     if (normalizedUrl && !redirectChain.includes(normalizedUrl)) {
         redirectChain = [...redirectChain, normalizedUrl];
     }
 
-
     let shouldRedirectToUrl; 
     let shouldReturnError; 
+    let domContentLoadedTs = null;
+    let graphmlWritten = false;
 
     const urlToCrawl = asHTTPUrl(args.url);
     const launchOptions = await puppeteerConfigForArgs(args); 
@@ -270,17 +259,20 @@ export const doCrawl = async (args, redirectChain, logger) => {
 
             await page.setCacheEnabled(false);
             await page.setExtraHTTPHeaders({
-                'Accept-Language': args['Accept-Language'],
+                'Accept-Language': args['acceptLanguage'],
             });
 
             const client = await page.target().createCDPSession();
             const networkEvents = [];
             const pageEvents = [];
             const responseBodies = new Map();
+
+            await client.send('Page.enable');
             
             // Prepare HAR collection if requested
-            await prepareHARGenerator(client, networkEvents, pageEvents, true, responseBodies, logger); 
-            
+            if (args.storeHar) {
+                await prepareHARGenerator(client, networkEvents, pageEvents, args.storeHarBody, responseBodies, logger); 
+            }
 
             // Crash handling
             client.on('Target.targetCrashed', (event) => {
@@ -296,7 +288,7 @@ export const doCrawl = async (args, redirectChain, logger) => {
             
             // Apply user agent override
             if (args.userAgent !== undefined) {
-                await page.setUserAgent(args.userAgent); //discuss this next meeting
+                await page.setUserAgent(args.userAgent); 
             }
 
             // Enable request interception to detect redirects
@@ -345,6 +337,7 @@ export const doCrawl = async (args, redirectChain, logger) => {
                     navigationCheckTimer.set(navigationTimeout + 10000, 'Goto timeout')
                 ]);
 
+                domContentLoadedTs = new Date().toISOString();
                 navigationCheckTimer.clear()
             }
             
@@ -363,10 +356,16 @@ export const doCrawl = async (args, redirectChain, logger) => {
             // Capture page graph and write to file
             const response = await generatePageGraph(args.seconds, page, client, shouldStopWaitingFunc, logger);
             await writeGraphML(args, urlToCrawl, response, logger);
+            graphmlWritten = true;
             
             // Store HAR
             if (args.storeHar) {
-                await exportHARTimeOut(networkEvents, pageEvents, responseBodies, args, urlToCrawl, logger) 
+                try {
+                    await exportHARTimeOut(networkEvents, pageEvents, responseBodies, args, urlToCrawl, logger)
+                } catch (harErr) {
+                    // HAR is auxiliary output; keep crawl success if graph capture succeeded.
+                    logger.info(`HAR export failed (non-fatal): ${harErr.message}`);
+                }
             }
             if (args.screenshot) {
                 const screenshotPath = createScreenshotPath(args, urlToCrawl);
@@ -386,7 +385,13 @@ export const doCrawl = async (args, redirectChain, logger) => {
         }
         catch (err) {
             logger.info('Error:', err)
-            shouldReturnError = true; 
+            if (graphmlWritten) {
+                // If page graph is already persisted, treat late-stage errors as non-fatal.
+                logger.info('GraphML already written; keeping crawl as success despite late-stage error.');
+                shouldReturnError = false;
+            } else {
+                shouldReturnError = true;
+            }
         }
         finally {
             try {
@@ -403,6 +408,7 @@ export const doCrawl = async (args, redirectChain, logger) => {
     }
     catch (err) {
 
+    // Convert to string safely for any error type
 
         const errorMessage = err instanceof Error 
             ? err.stack || err.message 
@@ -419,12 +425,13 @@ export const doCrawl = async (args, redirectChain, logger) => {
     if (shouldRedirectToUrl !== undefined) {
         const newArgs = { ...args };
         newArgs.url = shouldRedirectToUrl;
-        await doCrawl(newArgs, redirectChain, logger);
-        return;
+        return await doCrawl(newArgs, redirectChain, logger);
     }
 
     // If crawl failed, bubble up error to parent
     if (shouldReturnError) {
         throw new Error("Go to next child!");
     }
+
+    return domContentLoadedTs;
 };

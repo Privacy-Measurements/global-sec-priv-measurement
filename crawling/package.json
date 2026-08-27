@@ -6,15 +6,9 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "pre-crawl": "node ./pre_crawl.js",
-    "pre-crawl-validation": "node ./pre_crawl_validation",
+    "pre-crawl": "node ./commands/pre_crawl.js",
+    "pre-crawl-validation": "node ./commands/pre_crawl_validation.js",
     "check_number_of_urls_precrawled": "node ./commands/check_number_of_urls_precrawled.js",
-    "pagegraph-crawl-using-given-urls": "node ./pagegraph_crawl_using_given_urls.js",
-    "pagegraph_crawl_validations" : "node ./pagegraph_crawl_validations.js",
-    "delete_unseccessful_pagegraph_crawl": "node ./commands/delete_unseccessful_pagegraph_crawl.js",
-    "delete_broken_crawls": "node ./commands/delete_broken_crawls.js",
-    "print_pagegraph_crawl_statistics": "node commands/print_pagegraph_crawl_statistics.js",
-    "export_successful_pagegraph_crawled_urls": "node commands/export_successful_pagegraph_crawled_urls.js",
     "zip_finalized_sites": "node commands/zip_finalized_sites.js"
   },
   "type": "module",
@@ -25,6 +19,7 @@
   },
   "license": "MPL-2.0",
   "dependencies": {
+    "@duckduckgo/autoconsent": "^14.65.0",
     "adm-zip": "^0.5.16",
     "archiver": "^7.0.1",
     "argparse": "2.0.1",
@@ -34,6 +29,7 @@
     "bluebird": "^3.7.2",
     "chrome-har": "1.0.1",
     "dotenv": "^16.5.0",
+    "esbuild": "^0.27.4",
     "fast-xml-parser": "^5.2.3",
     "fs-extra": "^11.3.0",
     "http-mitm-proxy": "^1.1.0",

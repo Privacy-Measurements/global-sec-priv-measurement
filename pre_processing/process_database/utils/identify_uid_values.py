@@ -9,13 +9,22 @@ from wordfreq import top_n_list
 
 ENGLISH_WORDS = set(w.lower() for w in top_n_list("en", n=500_000))
 
-num_threads = 32
+num_threads = 16
+
+# For access_id X, use access_id ACCESS_MAP[X] as the reference baseline
+ACCESS_MAP = {'1': '2', '2': '3', '3': '1'}
 
 
-def get_validation_sessions(db_params, base_sessions):
+def get_reference_sessions(db_params, base_sessions):
+    """
+    For each session in base_sessions, fetch the reference session used for UID filtering.
+    The reference access_id is determined by ACCESS_MAP: 1→2, 2→3, 3→1.
+    Keyed by (etld, location, ref_access_id).
+    """
     triplets = set()
     for s in base_sessions:
-        triplets.add((s["etld"], s["location"], s["category"] + "-validation"))
+        ref_access_id = ACCESS_MAP[str(s["access_id"])]
+        triplets.add((s["etld"], s["location"], ref_access_id))
 
     if not triplets:
         return []
@@ -23,25 +32,24 @@ def get_validation_sessions(db_params, base_sessions):
     conn = pymysql.connect(**db_params)
     cursor = conn.cursor(pymysql.cursors.DictCursor)
 
-    # Build one query for all triplets
     placeholders = ", ".join(["(%s, %s, %s)"] * len(triplets))
     query = f"""
-        SELECT id, etld, category, url, location 
-        FROM crawl_sessions 
-        WHERE (etld, location, category) IN ({placeholders})
+        SELECT id, etld, url, location, access_id
+        FROM crawl_sessions
+        WHERE (etld, location, access_id) IN ({placeholders})
     """
 
     params = []
     for t in triplets:
-        params.extend(t)  # unpack etld, location, category_validation
+        params.extend(t)
 
     cursor.execute(query, params)
-    validation_sessions = cursor.fetchall()
+    reference_sessions = cursor.fetchall()
 
     cursor.close()
     conn.close()
 
-    return validation_sessions
+    return reference_sessions
 
 
 def get_non_treated_sessions(db_params):
@@ -50,12 +58,12 @@ def get_non_treated_sessions(db_params):
     cursor = conn.cursor(pymysql.cursors.DictCursor)
 
     query = """
-    SELECT id, etld, url, category, location
+    SELECT id, etld, url, category, location, access_id
     FROM crawl_sessions
     WHERE (user_identifiers IS NULL OR is_user_identifiers IS NULL)
-    AND category NOT LIKE %s
+    AND access_id IN ('1', '2', '3')
     """
-    cursor.execute(query, ("%-validation",))
+    cursor.execute(query)
     rows = cursor.fetchall()
 
     cursor.close()
@@ -156,9 +164,9 @@ def process_storage_table(session, table_name, conn, cursor):
         parsed_value = row["parsed_value"]
 
         if parsed_value is None:
-            raise ValueError(
-                f"[process_storage_table] Encountered NULL parsed_value in {table_name} for row id={row['id']} (session_id={session_id})"
-            )
+            # Skip rows with NULL parsed_value, mark as non-identifier
+            to_update_false.append(row['id'])
+            continue
 
         if isinstance(parsed_value, str):
             try:
@@ -230,7 +238,7 @@ def process_storage_table(session, table_name, conn, cursor):
     return identifier_values_only
 
 
-def process_validation_chunk(sessions_chunk, db_params, thread_id):
+def process_reference_chunk(sessions_chunk, db_params, thread_id):
 
     print('Starting with thread:', thread_id)
 
@@ -242,12 +250,14 @@ def process_validation_chunk(sessions_chunk, db_params, thread_id):
 
     for count, session in enumerate(sessions_chunk, 1):
         etld = session["etld"]
+        location = session["location"]
+        access_id = str(session["access_id"])
 
         cookies = process_storage_table(session, "cookies", conn, cursor)
         session_storage = process_storage_table(session, "session_storage", conn, cursor)
         local_storage = process_storage_table(session, "local_storage", conn, cursor)
 
-        results.append((etld, {
+        results.append(((etld, location, access_id), {
             "session_id": session["id"],
             "cookies": cookies,
             "session_storage": session_storage,
@@ -255,29 +265,33 @@ def process_validation_chunk(sessions_chunk, db_params, thread_id):
         }))
 
         if count % 50 == 0:
-            print(f"[Validation Thread {thread_id}] Processed {count}/{total} sessions ")
+            print(f"[Reference Thread {thread_id}] Processed {count}/{total} sessions ")
 
 
     cursor.close()
     conn.close()
     return results
 
-def process_validation_sessions(sessions, db_params):
-    validations_by_etld = {}
+def process_reference_sessions(sessions, db_params):
+    """
+    Process reference sessions in parallel and return a dict keyed by
+    (etld, location, access_id) → list of extracted identifier dicts.
+    """
+    validations_by_ref_key = {}
 
     sessions_chunks = split_list(sessions, num_threads)
     with ProcessPoolExecutor(max_workers=num_threads) as executor:
         futures = [
-            executor.submit(process_validation_chunk, chunk, db_params, i)
+            executor.submit(process_reference_chunk, chunk, db_params, i)
             for i, chunk in enumerate(sessions_chunks)
         ]
 
         for future in as_completed(futures):
             chunk_results = future.result()
-            for etld, result in chunk_results:
-                validations_by_etld.setdefault(etld, []).append(result)
+            for ref_key, result in chunk_results:
+                validations_by_ref_key.setdefault(ref_key, []).append(result)
 
-    return validations_by_etld
+    return validations_by_ref_key
 
 
 def similarity_score(a, b):
@@ -299,7 +313,7 @@ def compare_identifiers(current_identifiers, validation_identifiers):
     return filtered_identifiers
 
 
-def process_chunk(sessions, db_params, thread_id, validations_by_etld):
+def process_chunk(sessions, db_params, thread_id, validations_by_ref_key):
     conn = pymysql.connect(**db_params)
     cursor = conn.cursor(pymysql.cursors.DictCursor)
 
@@ -309,16 +323,18 @@ def process_chunk(sessions, db_params, thread_id, validations_by_etld):
 
     for session in sessions:
         etld = session["etld"]
-        validation_sessions = validations_by_etld.get(etld, [])
+        ref_access_id = ACCESS_MAP[str(session["access_id"])]
+        ref_key = (etld, session["location"], ref_access_id)
+        reference_sessions = validations_by_ref_key.get(ref_key, [])
 
         uids_in_cookies = process_storage_table(session, 'cookies', conn, cursor)
         uids_in_session_storage = process_storage_table(session, 'session_storage', conn, cursor)
         uids_in_local_storage = process_storage_table(session, 'local_storage', conn, cursor)
 
-        for validation in validation_sessions:
-            uids_in_cookies = compare_identifiers(uids_in_cookies, validation["cookies"])
-            uids_in_session_storage = compare_identifiers(uids_in_session_storage, validation["session_storage"])
-            uids_in_local_storage = compare_identifiers(uids_in_local_storage, validation["local_storage"])
+        for reference in reference_sessions:
+            uids_in_cookies = compare_identifiers(uids_in_cookies, reference["cookies"])
+            uids_in_session_storage = compare_identifiers(uids_in_session_storage, reference["session_storage"])
+            uids_in_local_storage = compare_identifiers(uids_in_local_storage, reference["local_storage"])
 
         if len(uids_in_cookies) + len(uids_in_session_storage) + len(uids_in_local_storage) > 0:
             is_user_identifiers = True
@@ -372,13 +388,13 @@ if __name__ == "__main__":
         exit(0)
 
 
-    print("Fetching validation sessions...")
-    validation_sessions = get_validation_sessions(db_params, normal_sessions)
-    print(f"Validation sessions found: {len(validation_sessions)}")
+    print("Fetching reference sessions...")
+    reference_sessions = get_reference_sessions(db_params, normal_sessions)
+    print(f"Reference sessions found: {len(reference_sessions)}")
 
 
-    print("Processing validation sessions...")
-    validations_by_etld = process_validation_sessions(validation_sessions, db_params)
+    print("Processing reference sessions...")
+    validations_by_ref_key = process_reference_sessions(reference_sessions, db_params)
 
 
     sessions_chunks = split_list(normal_sessions, num_threads)
@@ -387,7 +403,7 @@ if __name__ == "__main__":
         futures = []
         for i, chunk in enumerate(sessions_chunks):
             futures.append(
-                executor.submit(process_chunk, chunk, db_params, i, validations_by_etld)
+                executor.submit(process_chunk, chunk, db_params, i, validations_by_ref_key)
             )
 
         for future in futures:
