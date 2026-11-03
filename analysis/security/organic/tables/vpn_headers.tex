@@ -1,0 +1,33 @@
+\begin{table*}[!ht]
+    \centering
+    \footnotesize
+    \caption{Ablation Experiment: Comparison of deployment of security-related HTTP headers on Top \numemp{1500} globally popular websites (D1) when accessed with and without VPN. (Note that we could not collect VPN data from Algeria due to frequent network and electricity outages, and hence, we do not report them as of time of submission.)}
+    \label{tab:vpn_headers}
+    \begin{tabular}{l|c|c|c|c}
+    \toprule
+        HTTP Headers & GERMANY (VPN / Physical) & INDIA (VPN / Physical) & UAE (VPN / Physical) & USA (VPN / Physical) \\ \midrule
+        Set-Cookie & 43.49\% / 46.70\% & 45.10\% / 44.83\% & 43.23\% / 45.99\% & 43.58\% / 47.77\% \\ \hline
+        Strict-Transport-Security & 42.16\% / 44.56\% & 42.16\% / 40.11\% & 40.64\% / 42.60\% & 41.62\% / 44.74\% \\ \hline
+        X-Content-Type-Options & 38.32\% / 40.11\% & 38.68\% / 37.43\% & 37.34\% / 40.29\% & 38.50\% / 40.82\% \\ \hline
+        X-Frame-Options & 38.15\% / 39.66\% & 38.24\% / 36.27\% & 36.99\% / 38.41\% & 37.97\% / 39.84\% \\ \hline
+        X-Xss-Protection & 28.61\% / 29.77\% & 29.14\% / 28.07\% & 28.61\% / 30.04\% & 28.88\% / 30.21\% \\ \hline
+        Report-To & 26.65\% / 27.45\% & 26.92\% / 26.92\% & 25.76\% / 26.47\% & 26.65\% / 27.36\% \\ \hline
+        Content-Security-Policy & 23.53\% / 25.04\% & 23.89\% / 23.35\% & 22.91\% / 24.60\% & 23.44\% / 25.40\% \\ \hline
+        Access-Control-Allow-Origin & 9.63\% / 9.63\% & 9.00\% / 8.47\% & 9.27\% / 9.09\% & 9.54\% / 9.54\% \\ \hline
+        Permissions-Policy & 6.77\% / 7.04\% & 6.86\% / 7.04\% & 6.60\% / 7.04\% & 7.31\% / 8.20\% \\ \hline
+        Cross-Origin-Opener-Policy & 4.37\% / 4.63\% & 4.37\% / 4.19\% & 3.92\% / 5.17\% & 4.46\% / 4.63\% \\ \hline
+        Access-Control-Allow-Headers & 4.28\% / 4.55\% & 4.37\% / 4.10\% & 3.92\% / 4.37\% & 4.46\% / 4.72\% \\ \hline
+        Access-Control-Allow-Methods & 4.19\% / 4.55\% & 4.19\% / 3.83\% & 3.65\% / 4.10\% & 4.37\% / 4.46\% \\ \hline
+        X-Permitted-Cross-Domain-Policies & 4.10\% / 4.01\% & 4.10\% / 4.10\% & 4.10\% / 4.01\% & 3.65\% / 4.37\% \\ \hline
+        Content-Security-Policy-Report-Only & 3.12\% / 3.21\% & 3.12\% / 2.94\% & 2.67\% / 3.65\% & 3.21\% / 3.74\% \\ \hline
+        Access-Control-Allow-Credentials & 2.94\% / 2.94\% & 2.94\% / 2.67\% & 2.41\% / 3.03\% & 3.12\% / 3.30\% \\ \hline
+        Cross-Origin-Resource-Policy & 2.50\% / 2.67\% & 2.41\% / 2.50\% & 2.41\% / 2.94\% & 2.50\% / 2.85\% \\ \hline
+        Reporting-Endpoints & 1.87\% / 2.05\% & 2.23\% / 2.14\% & 2.05\% / 2.32\% & 2.05\% / 2.41\% \\ \hline
+        Access-Control-Expose-Headers & 2.50\% / 2.41\% & 2.23\% / 1.87\% & 2.14\% / 1.78\% & 2.14\% / 2.41\% \\ \hline
+        Origin-Agent-Cluster & 1.52\% / 1.69\% & 1.69\% / 1.52\% & 1.52\% / 1.78\% & 1.60\% / 1.78\% \\ \hline
+        Expect-Ct & 1.52\% / 1.60\% & 1.25\% / 1.34\% & 1.52\% / 1.34\% & 1.25\% / 1.43\% \\ \hline
+        Access-Control-Max-Age & 1.25\% / 1.34\% & 1.34\% / 0.98\% & 0.89\% / 1.34\% & 1.25\% / 1.43\% \\ \hline
+        Timing-Allow-Origin & 0.53\% / 0.71\% & 0.62\% / 0.71\% & 0.62\% / 0.62\% & 0.62\% / 0.71\% \\ \hline
+        Cross-Origin-Embedder-Policy & 0.62\% / 0.62\% & 0.36\% / 0.36\% & 0.36\% / 0.62\% & 0.36\% / 0.36\% \\ \hline
+    \end{tabular}
+\end{table*}
