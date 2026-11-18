@@ -1,0 +1,4 @@
+test,statistic,dof,p_value,effect_size,effect_size_name
+tracking_prevalence_chi2,1724.6243633625088,4,0.0,0.11230838324365978,cramers_v
+fingerprinting_prevalence_chi2,285.2852912013981,4,1.6157327458918833e-60,0.04567773990189115,cramers_v
+tracker_count_kruskal_wallis,875.289881374684,4,3.7612339818431314e-188,0.05077381990687882,epsilon_squared

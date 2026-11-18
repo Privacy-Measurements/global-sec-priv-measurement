@@ -1,0 +1,4 @@
+test,statistic,dof,p_value,effect_size,effect_size_name
+tracking_prevalence_cochran_q,81.9600915930651,4,6.693220775945598e-17,0.031728316326530615,prevalence_range
+fingerprinting_prevalence_cochran_q,426.50679851668724,4,5.201794318494933e-91,0.06808035714285714,prevalence_range
+tracker_count_friedman,1459.762958091738,4,0.0,0.058185704643325016,kendall_w

@@ -1,95 +1,34 @@
 
-from collections import Counter
-from pathlib import Path
-
+import json
+import os
+import sys
 import pandas as pd
+from collections import Counter, defaultdict
+from pathlib import Path
+from dotenv import load_dotenv
+from sqlalchemy import create_engine
 
 CURRENT_DIR = Path(__file__).resolve().parent
-OUTPUT_ROOT = CURRENT_DIR / "reports_D1" / "groups"
-SITE_LEVEL_FILE = "site_level_details.csv"
-SITE_LIST_SUFFIX = "webrtc_any_country_group_a_sites.txt"
-REPORT_SUFFIX = "webrtc_any_country_focus_report.txt"
-DEFAULT_GROUP_LABEL = "ALGERIA|INDIA|UAE__vs__GERMANY|USA"
+ANALYSIS_ROOT = CURRENT_DIR.parent
+if str(ANALYSIS_ROOT) not in sys.path:
+    sys.path.insert(0, str(ANALYSIS_ROOT))
+
+from utils.urls import extract_domain_from_url
+
+OUTPUT_ROOT = CURRENT_DIR / "webrtc"
+REPORT = "report.txt"
+
+POSITIVE_COUNTRIES = ["ALGERIA", "INDIA", "UAE"]
+NEGATIVE_COUNTRIES = ["GERMANY", "USA"]
 
 
-def parse_group_label(label: str):
-    if "__vs__" not in label:
-        raise ValueError(
-            "Group label must follow the pattern 'COUNTRY1|COUNTRY2__vs__COUNTRY3|COUNTRY4'"
-        )
-    left, right = label.split("__vs__", 1)
-    group_a = tuple(country.strip() for country in left.split("|") if country.strip())
-    group_b = tuple(country.strip() for country in right.split("|") if country.strip())
-    if not group_a or not group_b:
-        raise ValueError(f"Invalid group label: {label}")
-    return group_a, group_b
-
-
-def get_any_group_a_webrtc_sites(site_fingerprinting, group_a, group_b):
-    webrtc_rows = site_fingerprinting[site_fingerprinting["fp_type"] == "webrtc"].copy()
-    if webrtc_rows.empty:
-        return []
-
-    group_a_set = set(group_a)
-    group_b_set = set(group_b)
-    by_etld = webrtc_rows.groupby("etld")["location"].agg(set)
-
-    selected = [
-        str(etld)
-        for etld, location_set in by_etld.items()
-        if (location_set & group_a_set) and not (location_set & group_b_set)
-    ]
-    return sorted(selected)
-
-
-def intersect_across_present_group_a(site_fingerprinting, etld, group_a, field_name):
-    present_countries = set(
-        site_fingerprinting[
-            (site_fingerprinting["etld"] == etld)
-            & (site_fingerprinting["fp_type"] == "webrtc")
-            & (site_fingerprinting["location"].isin(group_a))
-            & (site_fingerprinting[field_name].notna())
-        ]["location"].astype(str).tolist()
+def load_engine():
+    load_dotenv()
+    return create_engine(
+        f"mysql+pymysql://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}@{os.getenv('DB_HOST')}/{os.getenv('DB_NAME')}",
+        pool_recycle=3600,
     )
 
-    if not present_countries:
-        return set()
-
-    value_sets = []
-    for country in sorted(present_countries):
-        values = set(
-            site_fingerprinting[
-                (site_fingerprinting["etld"] == etld)
-                & (site_fingerprinting["location"] == country)
-                & (site_fingerprinting["fp_type"] == "webrtc")
-                & (site_fingerprinting[field_name].notna())
-            ][field_name].astype(str).tolist()
-        )
-        value_sets.append(values)
-
-    if not value_sets:
-        return set()
-    if len(value_sets) == 1:
-        return value_sets[0]
-    return set.intersection(*value_sets)
-
-
-def summarize_distribution(values_by_site, denom):
-    counts = Counter()
-    for values in values_by_site.values():
-        for value in values:
-            counts[value] += 1
-
-    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
-    lines = []
-    if not ordered:
-        lines.append(f"No non-empty intersection found across the {denom} candidate site(s).")
-        return lines
-
-    for value, count in ordered:
-        pct = (count / denom * 100) if denom else 0.0
-        lines.append(f"- {value}: {count} site(s), {pct:.2f}% of {denom} site(s)")
-    return lines
 
 
 def write_text(path: Path, text: str):
@@ -97,80 +36,163 @@ def write_text(path: Path, text: str):
     path.write_text(text, encoding="utf-8")
 
 
-def build_group_report(group_label):
-    group_a, group_b = parse_group_label(group_label)
-    group_dir = OUTPUT_ROOT / group_label
-    site_level_path = group_dir / SITE_LEVEL_FILE
+def summarize_distribution(values_by_site, denom):
+    counts = Counter()
+    for values in values_by_site.values():
+        for value in values:
+            counts[value] += 1
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    lines = []
+    if not ordered:
+        lines.append(f"No non-empty intersection found across the {denom} candidate site(s).")
+        return lines
+    for value, count in ordered:
+        pct = (count / denom * 100) if denom else 0.0
+        lines.append(f"- {value}: {count} site(s), {pct:.2f}% of {denom} site(s)")
+    return lines
 
-    site_level_df = pd.read_csv(site_level_path)
-    site_level_df = site_level_df[(site_level_df["group_a"] == "|".join(group_a)) & (site_level_df["group_b"] == "|".join(group_b))].copy()
-    site_fingerprinting = site_level_df[site_level_df["fp_type"].notna()].copy()
 
-    selected_sites = get_any_group_a_webrtc_sites(site_fingerprinting, group_a, group_b)
-    site_list_path = group_dir / SITE_LIST_SUFFIX
-    write_text(site_list_path, "\n".join(selected_sites) + ("\n" if selected_sites else ""))
 
-    common_domains_by_site = {}
-    common_urls_by_site = {}
-    for etld in selected_sites:
-        common_domains = intersect_across_present_group_a(site_fingerprinting, etld, group_a, "fingerprinter")
-        common_urls = intersect_across_present_group_a(site_fingerprinting, etld, group_a, "fingerprinting_url")
-        if common_domains:
-            common_domains_by_site[etld] = common_domains
-        if common_urls:
-            common_urls_by_site[etld] = common_urls
+def generate_report(group_a, group_b, selected_sites, webrtc_fingerprinting_domains, webrtc_fingerprinting_urls, group_dir):
+    
+    report_lines = [
+        f"Group A: {'|'.join(group_a)}",
+        f"Group B: {'|'.join(group_b)}",
+        f"WebRTC sites in any A country and no B countries: {len(selected_sites)}",
+        "",
+        "List of sites:",
+    ]
 
-    total_selected_sites = len(selected_sites)
-
-    report_lines = []
-    report_lines.append(f"Group A: {'|'.join(group_a)}")
-    report_lines.append(f"Group B: {'|'.join(group_b)}")
-    report_lines.append(f"Group label: {group_label}")
-    report_lines.append(f"WebRTC sites in any A country and no B countries: {len(selected_sites)}")
-    report_lines.append(f"Sites with non-empty domain intersection across present A countries: {len(common_domains_by_site)}")
-    report_lines.append(f"Sites with non-empty URL intersection across present A countries: {len(common_urls_by_site)}")
-    report_lines.append("")
-    report_lines.append("List of qualifying group-A WebRTC sites:")
     for site in selected_sites:
         report_lines.append(f"- {site}")
     report_lines.append("")
 
-    if common_domains_by_site:
-        report_lines.append("Distribution of shared WebRTC fingerprinting domains across the A countries where the site appears:")
-        report_lines.extend(summarize_distribution(common_domains_by_site, total_selected_sites))
-        report_lines.append("")
-    else:
-        report_lines.append("No site had a non-empty intersection for WebRTC fingerprinting domains across the relevant A countries.")
-        report_lines.append("")
+    report_lines.append("Distribution of fingerprinting domains:")
+    report_lines.extend(summarize_distribution(webrtc_fingerprinting_domains, len(selected_sites)))
+    report_lines.append("")
 
-    if common_urls_by_site:
-        report_lines.append("Distribution of shared WebRTC fingerprinting URLs across the A countries where the site appears:")
-        report_lines.extend(summarize_distribution(common_urls_by_site, total_selected_sites))
-    else:
-        report_lines.append("No site had a non-empty intersection for WebRTC fingerprinting URLs across the relevant A countries.")
+    report_lines.append("Distribution of fingerprinting URLs:")
+    report_lines.extend(summarize_distribution(webrtc_fingerprinting_urls, len(selected_sites)))
 
-    report_path = group_dir / REPORT_SUFFIX
+    report_path = group_dir / REPORT
     write_text(report_path, "\n".join(report_lines) + "\n")
-
     return {
-        "group_label": group_label,
-        "group_dir": str(group_dir),
-        "sites_file": str(site_list_path),
         "report_file": str(report_path),
         "n_selected_sites": len(selected_sites),
-        "n_domain_intersection_sites": len(common_domains_by_site),
-        "n_url_intersection_sites": len(common_urls_by_site),
+        "n_domain_intersection_sites": len(webrtc_fingerprinting_domains),
+        "n_url_intersection_sites": len(webrtc_fingerprinting_urls),
     }
 
 
-def main():
-    result = build_group_report(DEFAULT_GROUP_LABEL)
-    print(f"Generated site list: {result['sites_file']}")
-    print(f"Generated report: {result['report_file']}")
-    print(f"n_selected_sites: {result['n_selected_sites']}")
-    print(f"n_domain_intersection_sites: {result['n_domain_intersection_sites']}")
-    print(f"n_url_intersection_sites: {result['n_url_intersection_sites']}")
+def extract_webrtc_values(entries):
+    return {
+        (extract_domain_from_url(item["caller_url"]) or item["caller_url"], item["caller_url"])
+        for item in entries
+        if item.get("caller_url")
+    }
+
+def build_country_site_values(sessions):
+
+    site_access_values = defaultdict(lambda: defaultdict(set))
+    site_values = {}
+
+    for _, row in sessions.iterrows():
+
+        etld = row["etld"]
+        access_id = row.get("access_id")
+        fp_data = row.get("fingerprinting") or {}        
+        entries = fp_data.get("webrtc")
+        site_access_values[etld][str(access_id)].update(extract_webrtc_values(entries))
+
+    for etld, access_map in site_access_values.items():
+        value_sets = list(access_map.values())
+        if not value_sets or not all(value_sets):
+            continue
+
+        common_values = set.intersection(*value_sets)
+        if common_values:
+            site_values[etld] = common_values
+
+    return site_values
+
+def get_sites_with_fp_in_country(country):
+    engine = load_engine()
+    sessions = pd.read_sql(
+        """
+        SELECT
+            access_id,
+            etld,
+            fingerprinting
+        FROM crawl_sessions
+        WHERE category = 'global'
+          AND location = %(country)s
+          AND location NOT LIKE '%%VPN'
+          AND (is_cloudflare IS NULL OR is_cloudflare = 0)
+          AND (etld_url_rel IS NULL OR etld_url_rel <> 'cross-site')
+        """,
+        engine,
+        params={"country": country},
+    )
+    sessions["fingerprinting"] = sessions["fingerprinting"].apply(
+        lambda value: json.loads(value) if isinstance(value, str) and value.strip() else {}
+    )
+
+    return build_country_site_values(sessions)
+
+def get_any_group_a_webrtc_sites(country_site_values, group_a, group_b):
+    group_a_sites = set().union(*(set(country_site_values.get(country, {})) for country in group_a))
+    group_b_sites = set().union(*(set(country_site_values.get(country, {})) for country in group_b))
+    return sorted(site for site in group_a_sites if site not in group_b_sites)
+
+def get_shared_webrtc_values(country_site_values, site, countries):
+    relevant_values = [
+        country_site_values.get(country, {}).get(site, set())
+        for country in countries
+        if site in country_site_values.get(country, {})
+    ]
+    if not relevant_values:
+        return set()
+    if len(relevant_values) == 1:
+        return relevant_values[0]
+    return set.intersection(*relevant_values)
+
+def get_webrtc_fingerprinting(country_site_values, selected_sites, countries):
+    domains = {}
+    urls = {}
+
+    for site in selected_sites:
+        shared_values = get_shared_webrtc_values(country_site_values, site, countries)
+        if not shared_values:
+            continue
+
+        domains[site] = {domain for domain, _ in shared_values}
+        urls[site] = {url for _, url in shared_values}
+
+    return domains, urls
+
+def build_group_report():
+    group_a = POSITIVE_COUNTRIES
+    group_b = NEGATIVE_COUNTRIES
+    group_dir = OUTPUT_ROOT
+    group_dir.mkdir(parents=True, exist_ok=True)
+
+    country_site_values = {
+        country: get_sites_with_fp_in_country(country)
+        for country in set(group_a) | set(group_b)
+    }
+
+
+    selected_sites = get_any_group_a_webrtc_sites(country_site_values, group_a, group_b)
+
+    webrtc_fingerprinting_domains, webrtc_fingerprinting_urls = get_webrtc_fingerprinting(
+        country_site_values,
+        selected_sites,
+        group_a,
+    )
+
+    return generate_report(group_a, group_b, selected_sites, webrtc_fingerprinting_domains, webrtc_fingerprinting_urls, group_dir)
 
 
 if __name__ == "__main__":
-    main()
+    result = build_group_report()
+    print(f"Generated report: {result['report_file']}")

@@ -1,7 +1,6 @@
 import json
 import os
 import sys
-from collections import defaultdict
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -16,16 +15,9 @@ from analysis.utils.sessions import filter_global_to_common_etlds
 from analysis.utils.urls import extract_domain_from_url
 
 OUTPUT_DIR = os.path.join(CURRENT_DIR, "reports_general")
-TOP_FINGERPRINTERS_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "top_fingerprinters")
-COUNTRY_SPECIFIC_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "country_specific")
-D3_COUNTRY_DATASETS_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "d3_country_datasets")
 COUNTRIES = ["ALGERIA", "GERMANY", "INDIA", "UAE", "USA"]
-TOP_K = 10
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-os.makedirs(TOP_FINGERPRINTERS_OUTPUT_DIR, exist_ok=True)
-os.makedirs(COUNTRY_SPECIFIC_OUTPUT_DIR, exist_ok=True)
-os.makedirs(D3_COUNTRY_DATASETS_OUTPUT_DIR, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +41,7 @@ def load_tables():
             url,
             category,
             location,
+            access_id,
             fingerprinting,
             is_fingerprinting
         FROM crawl_sessions
@@ -69,63 +62,94 @@ def load_tables():
 # Site-level fingerprinting universe
 # ---------------------------------------------------------------------------
 def _candidate_fingerprinter(entry):
-    if isinstance(entry, str):
-        value = entry.strip()
-        if not value:
-            return None
-        domain = extract_domain_from_url(value)
-        return domain or value
-
     if not isinstance(entry, dict):
         return None
 
-    for key in ("caller_url", "script_src", "script_url", "domain"):
-        value = entry.get(key)
-        if not value:
-            continue
-        value = str(value).strip()
-        if value.startswith("//"):
-            value = "https:" + value
-        domain = extract_domain_from_url(value)
-        if domain:
-            return domain
-        if value:
-            return value
+    url = entry.get("caller_url")
+    if not url:
+        return None
 
-    return None
+    return extract_domain_from_url(url) or url
 
 
 def build_site_fingerprinting_table(sessions):
+    """
+    Intersection-only approach:
+    For each site (etld, category, location):
+      1. Group by access_id
+      2. For each access_id, determine if it has fingerprinting
+      3. Keep only fingerprinters that appear in ALL access_ids
+    
+    Output: One row per (etld, category, location, fp_type, fingerprinter)
+            where fingerprinter appears consistently across ALL access_ids for that site
+    """
     rows = []
-    for _, row in sessions.iterrows():
-        fp_data = row.get("fingerprinting") or {}
-        if not isinstance(fp_data, dict):
-            continue
-
-        for fp_type, entries in fp_data.items():
-            if not isinstance(entries, list):
-                continue
-            for entry in entries:
-                fingerprinter = _candidate_fingerprinter(entry)
-                if not fingerprinter:
+    
+    for (etld, category, location), site_sessions in sessions.groupby(["etld", "category", "location"]):
+        access_ids = site_sessions["access_id"].unique()
+        
+        # For each access_id, collect fingerprinters
+        fingerprinters_by_access_id = {}
+        
+        for access_id in access_ids:
+            access_sessions = site_sessions[site_sessions["access_id"] == access_id]
+            access_fingerprinters = {}
+            
+            for _, row in access_sessions.iterrows():
+                fp_data = row.get("fingerprinting") or {}
+                if not isinstance(fp_data, dict):
                     continue
-                rows.append(
-                    {
-                        "etld": row["etld"],
-                        "category": row["category"],
-                        "location": row["location"],
+                
+                for fp_type, entries in fp_data.items():
+                    if not isinstance(entries, list):
+                        continue
+                    if fp_type not in access_fingerprinters:
+                        access_fingerprinters[fp_type] = set()
+                    
+                    for entry in entries:
+                        fingerprinter = _candidate_fingerprinter(entry)
+                        if fingerprinter:
+                            access_fingerprinters[fp_type].add(fingerprinter)
+            
+            fingerprinters_by_access_id[access_id] = access_fingerprinters
+        
+        # Find intersection: fingerprinters present in ALL access_ids
+        if not fingerprinters_by_access_id:
+            continue
+        
+        all_fp_types = set()
+        for fingerprinters in fingerprinters_by_access_id.values():
+            all_fp_types.update(fingerprinters.keys())
+        
+        for fp_type in all_fp_types:
+            # Get fingerprinters for this type in each access_id
+            fp_sets = [
+                fingerprinters_by_access_id.get(aid, {}).get(fp_type, set())
+                for aid in access_ids
+            ]
+            
+            # Intersection: only fingerprinters present in all access_ids
+            if all(fp_sets):  # All access_ids have this fp_type
+                common_fingerprinters = set.intersection(*fp_sets)
+                for fingerprinter in common_fingerprinters:
+                    rows.append({
+                        "etld": etld,
+                        "category": category,
+                        "location": location,
                         "fp_type": fp_type,
                         "fingerprinter": fingerprinter,
-                    }
-                )
-
+                    })
+    
     if not rows:
-        return pd.DataFrame(columns=["etld", "category", "location", "fp_type", "fingerprinter"])
-
+        empty = pd.DataFrame(columns=["etld", "category", "location", "fp_type", "fingerprinter"])
+        empty.to_csv(f"{OUTPUT_DIR}/site_level_summary.csv", index=False)
+        return empty
+    
     df = pd.DataFrame(rows)
-    return df.drop_duplicates(subset=["etld", "category", "location", "fp_type", "fingerprinter"])[
-        ["etld", "category", "location", "fp_type", "fingerprinter"]
-    ]
+    df = df[["etld", "category", "location", "fp_type", "fingerprinter"]]
+    df = df.sort_values(["location", "category", "etld", "fp_type", "fingerprinter"], kind="mergesort").reset_index(drop=True)
+    df.to_csv(f"{OUTPUT_DIR}/site_level_summary.csv", index=False)
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +204,7 @@ def compute_fingerprinting_type_prevalence(sessions, site_fingerprinting):
     ).fillna({"has_fingerprint_type": 0})
 
     rows = []
-    for category in ["global", "country_coded", "country_specific", "D2_EQUIVALENT"]:
+    for category in ["global", "country_coded", "country_specific"]:
         category_df = merged[merged["category"] == category].copy()
         if category_df.empty:
             continue
@@ -256,7 +280,7 @@ def compute_total_distinct_fingerprinters(site_fingerprinting):
 
 
 def write_fingerprinting_summary(prevalence, avg_fps, total_fps, type_prevalence=None):
-    categories = ["global", "country_coded", "country_specific", "D2_EQUIVALENT", "overall (D1/D2/D3)"]
+    categories = ["global", "country_coded", "country_specific", "overall (D1/D2/D3)"]
     panel_map = {
         "fingerprinting_prevalence_pct": prevalence,
         "avg_num_fingerprinters_per_site": avg_fps,
@@ -289,248 +313,6 @@ def write_fingerprinting_summary(prevalence, avg_fps, total_fps, type_prevalence
 
 
 # ---------------------------------------------------------------------------
-# Top fingerprinters by country
-# ---------------------------------------------------------------------------
-def compute_top_fingerprinters_for_subset(sessions, site_fingerprinting):
-    denominators = sessions[["location", "etld"]].drop_duplicates().groupby("location").size().to_dict()
-    presence = defaultdict(set)
-    for _, row in site_fingerprinting.iterrows():
-        presence[(row["location"], row["fingerprinter"])].add(row["etld"])
-
-    rows = []
-    for (loc, fingerprinter), etlds in presence.items():
-        denom = denominators.get(loc, 0)
-        if denom == 0:
-            continue
-        rows.append(
-            {
-                "location": loc,
-                "fingerprinter": fingerprinter,
-                "percentage": round(len(etlds) / denom * 100, 2),
-            }
-        )
-
-    ranked = pd.DataFrame(rows)
-    if ranked.empty:
-        return pd.DataFrame(columns=["Rank"] + COUNTRIES), pd.DataFrame(columns=["Fingerprinter"] + COUNTRIES)
-
-    ranked = ranked.sort_values(["location", "percentage", "fingerprinter"], ascending=[True, False, True])
-    ranked["rank"] = ranked.groupby("location").cumcount() + 1
-    top_ranked = ranked[ranked["rank"] <= TOP_K].copy()
-    top_ranked["entry"] = top_ranked.apply(lambda r: f"{r['fingerprinter']} ({r['percentage']:.2f}%)", axis=1)
-
-    list_df = (
-        top_ranked.pivot(index="rank", columns="location", values="entry")
-        .reindex(index=range(1, TOP_K + 1), columns=COUNTRIES)
-        .reset_index()
-        .rename(columns={"rank": "Rank"})
-    )
-
-    fp_rank = pd.concat(
-        [
-            ranked.groupby("fingerprinter")["location"].nunique().rename("n_countries"),
-            ranked.groupby("fingerprinter")["percentage"].mean().rename("avg_pct"),
-        ],
-        axis=1,
-    ).sort_values(["n_countries", "avg_pct"], ascending=[False, False])
-    top_fps = fp_rank.head(TOP_K).index.tolist()
-
-    matrix_df = (
-        ranked[ranked["fingerprinter"].isin(top_fps)]
-        .pivot_table(index="fingerprinter", columns="location", values="percentage", aggfunc="first")
-        .reindex(index=top_fps, columns=COUNTRIES)
-        .reset_index()
-        .rename(columns={"fingerprinter": "Fingerprinter"})
-    )
-
-    return list_df, matrix_df
-
-
-def write_top_fingerprinter_outputs(sessions, site_fingerprinting):
-    bucket_map = {
-        "overall_d1_d2_d3": (
-            sessions[sessions["category"].isin(["global", "country_coded", "country_specific"])].copy(),
-            site_fingerprinting[site_fingerprinting["category"].isin(["global", "country_coded", "country_specific"])].copy(),
-        ),
-        "d1": (
-            sessions[sessions["category"] == "global"].copy(),
-            site_fingerprinting[site_fingerprinting["category"] == "global"].copy(),
-        ),
-        "d2": (
-            sessions[sessions["category"] == "country_coded"].copy(),
-            site_fingerprinting[site_fingerprinting["category"] == "country_coded"].copy(),
-        ),
-        "d3": (
-            sessions[sessions["category"] == "country_specific"].copy(),
-            site_fingerprinting[site_fingerprinting["category"] == "country_specific"].copy(),
-        ),
-        "d2_equivalent": (
-            sessions[sessions["category"] == "D2_EQUIVALENT"].copy(),
-            site_fingerprinting[site_fingerprinting["category"] == "D2_EQUIVALENT"].copy(),
-        ),
-    }
-
-    for bucket_name, (bucket_sessions, bucket_fps) in bucket_map.items():
-        list_df, matrix_df = compute_top_fingerprinters_for_subset(bucket_sessions, bucket_fps)
-        list_df.to_csv(f"{TOP_FINGERPRINTERS_OUTPUT_DIR}/top_fingerprinters_{bucket_name}.csv", index=False)
-        matrix_df.to_csv(f"{TOP_FINGERPRINTERS_OUTPUT_DIR}/top_fingerprinters_matrix_{bucket_name}.csv", index=False)
-
-
-# ---------------------------------------------------------------------------
-# Country-specific fingerprinters
-# ---------------------------------------------------------------------------
-def compute_country_specific_fingerprinters(site_fingerprinting):
-    presence = defaultdict(set)
-    for _, row in site_fingerprinting.iterrows():
-        presence[(row["location"], row["fingerprinter"])].add(row["etld"])
-
-    tracker_locations = defaultdict(set)
-    for (loc, fingerprinter) in presence:
-        tracker_locations[fingerprinter].add(loc)
-
-    total_occurrences = (
-        site_fingerprinting.groupby(["location", "fingerprinter", "etld"])
-        .size()
-        .reset_index()
-        .groupby("location")
-        .size()
-        .to_dict()
-    )
-
-    summary = []
-    for loc in COUNTRIES:
-        local_only = {
-            fingerprinter
-            for (presence_loc, fingerprinter) in presence
-            if presence_loc == loc and len(tracker_locations[fingerprinter]) == 1
-        }
-        occ = sum(len(presence[(loc, fingerprinter)]) for fingerprinter in local_only)
-        total = total_occurrences.get(loc, 0)
-        summary.append(
-            {
-                "country": loc,
-                "num_country_specific_fingerprinters": len(local_only),
-                "coverage_pct": round(occ / total * 100 if total > 0 else 0, 2),
-            }
-        )
-    return pd.DataFrame(summary)
-
-
-def compute_country_specific_top_fingerprinters(sessions, site_fingerprinting, countries, top_k):
-    denominators = sessions[["location", "etld"]].drop_duplicates().groupby("location").size().to_dict()
-    presence = defaultdict(set)
-    for _, row in site_fingerprinting.iterrows():
-        presence[(row["location"], row["fingerprinter"])].add(row["etld"])
-
-    tracker_locations = defaultdict(set)
-    for (loc, fingerprinter) in presence:
-        tracker_locations[fingerprinter].add(loc)
-
-    rows = []
-    for (loc, fingerprinter), etlds in presence.items():
-        if len(tracker_locations[fingerprinter]) != 1:
-            continue
-        denom = denominators.get(loc, 0)
-        if denom == 0:
-            continue
-        rows.append(
-            {
-                "location": loc,
-                "fingerprinter": fingerprinter,
-                "percentage": round(len(etlds) / denom * 100, 2),
-            }
-        )
-
-    ranked = pd.DataFrame(rows)
-    if ranked.empty:
-        return pd.DataFrame(columns=countries)
-
-    ranked = ranked.sort_values(["location", "percentage", "fingerprinter"], ascending=[True, False, True])
-    result = {}
-    for loc in countries:
-        country_rows = ranked[ranked["location"] == loc].head(top_k)
-        result[loc] = [f"{fp} ({pct:.2f}%)" for fp, pct in zip(country_rows["fingerprinter"], country_rows["percentage"])]
-
-    return pd.DataFrame({country: pd.Series(vals) for country, vals in result.items()}).reindex(columns=countries)
-
-
-def write_country_specific_outputs(sessions, site_fingerprinting):
-    compute_country_specific_fingerprinters(site_fingerprinting).to_csv(
-        f"{COUNTRY_SPECIFIC_OUTPUT_DIR}/country_specific_fingerprinters_summary.csv",
-        index=False,
-    )
-
-    bucket_map = {
-        "overall_d1_d2_d3": (
-            sessions[sessions["category"].isin(["global", "country_coded", "country_specific"])].copy(),
-            site_fingerprinting[site_fingerprinting["category"].isin(["global", "country_coded", "country_specific"])].copy(),
-        ),
-        "d1": (
-            sessions[sessions["category"] == "global"].copy(),
-            site_fingerprinting[site_fingerprinting["category"] == "global"].copy(),
-        ),
-        "d2": (
-            sessions[sessions["category"] == "country_coded"].copy(),
-            site_fingerprinting[site_fingerprinting["category"] == "country_coded"].copy(),
-        ),
-        "d3": (
-            sessions[sessions["category"] == "country_specific"].copy(),
-            site_fingerprinting[site_fingerprinting["category"] == "country_specific"].copy(),
-        ),
-        "d2_equivalent": (
-            sessions[sessions["category"] == "D2_EQUIVALENT"].copy(),
-            site_fingerprinting[site_fingerprinting["category"] == "D2_EQUIVALENT"].copy(),
-        ),
-    }
-
-    for bucket_name, (bucket_sessions, bucket_fps) in bucket_map.items():
-        list_df = compute_country_specific_top_fingerprinters(bucket_sessions, bucket_fps, COUNTRIES, TOP_K)
-        list_df.to_csv(f"{COUNTRY_SPECIFIC_OUTPUT_DIR}/top_country_specific_fingerprinters_{bucket_name}.csv", index=False)
-
-
-def _fingerprinting_flag(value):
-    if pd.isna(value):
-        return 0
-    if isinstance(value, str):
-        return int(value.strip().lower() in {"1", "true", "t", "yes", "y"})
-    return int(bool(value))
-
-
-def write_d3_country_fingerprinting_summary(sessions):
-    """Write one D3 CSV per country with one row per (location, site) and OR-aggregated is_fingerprinting."""
-    d3_sessions = sessions[sessions["category"] == "country_specific"].copy()
-    if d3_sessions.empty:
-        for country in COUNTRIES:
-            out_path = os.path.join(D3_COUNTRY_DATASETS_OUTPUT_DIR, f"d3_fingerprinting_{country}.csv")
-            pd.DataFrame(columns=["location", "site", "is_fingerprinting"]).to_csv(out_path, index=False)
-        return
-
-    keys = (
-        d3_sessions[["location", "etld"]]
-        .drop_duplicates()
-        .rename(columns={"etld": "site"})
-    )
-
-    agg = (
-        d3_sessions.groupby(["location", "etld"], as_index=False)["is_fingerprinting"]
-        .agg(lambda values: int(any(_fingerprinting_flag(v) for v in values)))
-        .rename(columns={"etld": "site"})
-    )
-
-    site_flags = keys.merge(agg, on=["location", "site"], how="left")
-    site_flags["is_fingerprinting"] = site_flags["is_fingerprinting"].fillna(0).astype(int)
-
-    for country in COUNTRIES:
-        country_df = (
-            site_flags[site_flags["location"] == country]
-            .sort_values(["site"])
-            .reset_index(drop=True)
-        )
-        out_path = os.path.join(D3_COUNTRY_DATASETS_OUTPUT_DIR, f"d3_fingerprinting_{country}.csv")
-        country_df.to_csv(out_path, index=False)
-
-
-# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 def main():
@@ -545,9 +327,6 @@ def main():
     write_fingerprinting_summary(prevalence, avg_fps, total_fps, type_prevalence)
 
     type_prevalence.to_csv(f"{OUTPUT_DIR}/fingerprinting_type_prevalence.csv", index=False)
-    write_top_fingerprinter_outputs(sessions, site_fingerprinting)
-    write_country_specific_outputs(sessions, site_fingerprinting)
-    write_d3_country_fingerprinting_summary(sessions)
 
 
 if __name__ == "__main__":

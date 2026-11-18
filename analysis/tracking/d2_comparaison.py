@@ -9,7 +9,6 @@ REPO_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, "..", ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from analysis.tracking.d2_session_level_deviation import export_d2_session_level_deviation_analysis
 from analysis.utils.urls import extract_domain_from_url
 
 
@@ -76,7 +75,8 @@ def load_tables():
             etld,
             url,
             category,
-            location
+            location,
+            access_id
         FROM crawl_sessions
         WHERE category IN ('country_coded', 'global', 'D2_EQUIVALENT')
           AND location NOT LIKE '%%VPN'
@@ -208,6 +208,7 @@ def build_paired_sessions(sessions, pair_universe):
         "equivalent_category",
         "site_side",
         "session_id",
+        "access_id",
         "etld",
         "category",
         "location",
@@ -221,19 +222,43 @@ def build_paired_sessions(sessions, pair_universe):
     return paired_sessions.drop_duplicates(["pair_id", "site_side", "session_id"])
 
 
-def build_pair_tracking(paired_sessions, tracker_requests):
-    # Output format: one row per unique (pair_id, side, tracker_domain).
-    # Join tracker requests to the pair metadata needed to compare D2 vs equivalent sides.
+def build_pair_tracking(paired_sessions, pair_universe, tracker_requests):
+    # Count a tracker for a pair-side only if it appears on ALL distinct access_ids for that side.
     tracking = tracker_requests.merge(
-        paired_sessions[["pair_id", "country", "d2_etld", "equivalent_etld", "site_side", "session_id"]],
+        paired_sessions[["pair_id", "country", "d2_etld", "equivalent_etld", "site_side", "session_id", "access_id"]],
         on="session_id",
         how="inner",
     )
     tracking["tracker_domain"] = tracking["request_url"].apply(extract_domain_from_url)
-    tracking = tracking.dropna(subset=["tracker_domain"])
-    # Collapse repeated requests so only site-level tracker presence remains.
-    tracking = tracking.drop_duplicates(["pair_id", "site_side", "tracker_domain"])
-    return tracking[["pair_id", "country", "d2_etld", "equivalent_etld", "site_side", "tracker_domain"]]
+    tracking = tracking.dropna(subset=["tracker_domain"]).copy()
+
+    pair_meta = pair_universe.set_index("pair_id")[["country", "d2_etld", "equivalent_etld"]].to_dict("index")
+    rows = []
+    tracker_sets_by_side = {}
+
+    for (pair_id, site_side, access_id), tracker_domains in tracking.groupby(
+        ["pair_id", "site_side", "access_id"], dropna=False
+    )["tracker_domain"].agg(set).items():
+        tracker_sets_by_side.setdefault((pair_id, site_side), {})[access_id] = set(tracker_domains)
+
+    for (pair_id, site_side), access_sets in tracker_sets_by_side.items():
+        if not access_sets:
+            continue
+        common_trackers = set.intersection(*access_sets.values()) if len(access_sets) > 1 else set(next(iter(access_sets.values())))
+        meta = pair_meta.get(pair_id, {})
+        for tracker in sorted(common_trackers):
+            rows.append(
+                {
+                    "pair_id": pair_id,
+                    "country": meta.get("country"),
+                    "d2_etld": meta.get("d2_etld"),
+                    "equivalent_etld": meta.get("equivalent_etld"),
+                    "site_side": site_side,
+                    "tracker_domain": tracker,
+                }
+            )
+
+    return pd.DataFrame(rows, columns=["pair_id", "country", "d2_etld", "equivalent_etld", "site_side", "tracker_domain"])
 
 
 def build_pair_tracker_sets(pair_universe, pair_tracking):
@@ -253,23 +278,39 @@ def build_pair_tracker_sets(pair_universe, pair_tracking):
     return tracker_sets
 
 
+def normalize_site_pattern(domain):
+    # Convert country-specific site variants such as:
+    #   books.google.dz -> books.google.*
+    #   books.google.co.in -> books.google.*
+    #   mfa.gov.dz -> mfa.gov.*
+    value = str(domain or "").strip().lower()
+    if not value:
+        return ""
+
+    parts = value.split(".")
+    if len(parts) <= 1:
+        return value
+
+    generic_suffixes = {"co", "com", "org", "net", "gov", "edu", "ac", "io", "info", "biz"}
+    if len(parts) >= 3 and parts[-1] and len(parts[-1]) == 2 and parts[-2] in generic_suffixes:
+        return ".".join(parts[:-2]) + ".*"
+
+    if len(parts) >= 2 and parts[-1] and len(parts[-1]) == 2:
+        return ".".join(parts[:-1]) + ".*"
+
+    return ".".join(parts[:-1]) + ".*" if len(parts) > 1 else value
+
+
 def save_pair_universe(pair_universe):
-    # Save the final comparable D2 universe for debugging and downstream reporting.
-    pair_universe.sort_values(["country", "d2_etld"]).to_csv(
-        f"{OUTPUT_DIR}/pair_universe.csv",
-        index=False,
+    # Save only the normalized site pattern per country; keep the CSV compact and easy to inspect.
+    export_df = pair_universe[["country", "d2_etld", "equivalent_etld"]].copy()
+    export_df["Site"] = export_df.apply(
+        lambda row: normalize_site_pattern(row["d2_etld"]) or normalize_site_pattern(row["equivalent_etld"]),
+        axis=1,
     )
-
-
-def export_overall_numbers(pair_universe):
-    # Report how many D2 sites per country have an equivalent side available in the database.
-    summary = (
-        pair_universe.groupby("country")
-        .agg(n_pairs=("pair_id", "nunique"))
-        .reset_index()
-        .sort_values("country")
-    )
-    summary.to_csv(f"{OUTPUT_DIR}/overall_numbers.csv", index=False)
+    export_df = export_df[["country", "Site"]].drop_duplicates().sort_values(["country", "Site"]).reset_index(drop=True)
+    export_df.columns = ["country", "Site"]
+    export_df.to_csv(f"{OUTPUT_DIR}/pair_universe.csv", index=False)
 
 
 def export_tracking_prevalence(pair_universe, tracker_sets):
@@ -277,140 +318,103 @@ def export_tracking_prevalence(pair_universe, tracker_sets):
     rows = []
     pair_meta = pair_universe.set_index("pair_id")
     for pair_id, side_sets in tracker_sets.items():
-        # One row per pair: whether each side shows at least one third-party tracker.
         meta = pair_meta.loc[pair_id]
+        site = normalize_site_pattern(meta["d2_etld"]) or normalize_site_pattern(meta["equivalent_etld"])
         rows.append(
             {
                 "country": meta["country"],
-                "pair_id": pair_id,
-                "d2_etld": meta["d2_etld"],
-                "equivalent_etld": meta["equivalent_etld"],
+                "site": site,
                 "d2_has_tracking": int(bool(side_sets["D2"])),
                 "equivalent_has_tracking": int(bool(side_sets["EQUIVALENT"])),
             }
         )
 
     pair_level = pd.DataFrame(rows)
-    if pair_level.empty:
-        # Emit empty files with stable schemas if no comparable pairs survive filtering.
-        pd.DataFrame(columns=["country", "pair_id", "d2_etld", "equivalent_etld", "d2_has_tracking", "equivalent_has_tracking"]).to_csv(
-            f"{OUTPUT_DIR}/tracking_prevalence_pair_level.csv",
-            index=False,
-        )
-        pd.DataFrame(columns=["country", "n_pairs", "n_d2_with_tracking", "n_equivalent_with_tracking", "pct_d2_with_tracking", "pct_equivalent_with_tracking"]).to_csv(
-            f"{OUTPUT_DIR}/tracking_prevalence_summary.csv",
-            index=False,
-        )
-        return pair_level
-
-    pair_level.to_csv(f"{OUTPUT_DIR}/tracking_prevalence_pair_level.csv", index=False)
-
-    # Aggregate pair-level tracking presence into country-level prevalence summaries.
-    summary = (
-        pair_level.groupby("country")
-        .agg(
-            n_pairs=("pair_id", "nunique"),
-            n_d2_with_tracking=("d2_has_tracking", "sum"),
-            n_equivalent_with_tracking=("equivalent_has_tracking", "sum"),
-        )
-        .reset_index()
-        .sort_values("country")
-    )
-    summary["pct_d2_with_tracking"] = (summary["n_d2_with_tracking"] / summary["n_pairs"] * 100).round(2)
-    summary["pct_equivalent_with_tracking"] = (
-        summary["n_equivalent_with_tracking"] / summary["n_pairs"] * 100
-    ).round(2)
-    summary.to_csv(f"{OUTPUT_DIR}/tracking_prevalence_summary.csv", index=False)
     return pair_level
 
 
 def export_site_tracking_difference_summary(pair_level):
     # Count pairs where one side has tracking and the other side does not.
     if pair_level.empty:
-        pd.DataFrame(columns=["country", "n_pairs", "n_d2_only_tracking", "n_equivalent_only_tracking", "pct_d2_only_tracking", "pct_equivalent_only_tracking"]).to_csv(
-            f"{OUTPUT_DIR}/site_tracking_difference_summary.csv",
+        pd.DataFrame(columns=["country", "n_pairs", "n_d2_only_site_tracking", "n_equivalent_only_site_tracking", "pct_pairs_with_d2_only_site_tracking", "pct_pairs_with_equivalent_only_site_tracking"]).to_csv(
+            f"{OUTPUT_DIR}/site_level_tracking_asymmetry_summary.csv",
             index=False,
         )
         return
 
-    # Start from the country-level pair counts used as denominators.
-    summary = pair_level.groupby("country").agg(
-        n_pairs=("pair_id", "nunique"),
-        n_d2_only_tracking=("d2_has_tracking", lambda values: 0),
-    ).reset_index()
+    # Start from the country-level site counts used as denominators.
+    summary = pair_level.groupby("country").size().rename("n_pairs").reset_index()
 
     # Count D2-only tracking cases and equivalent-only tracking cases separately.
     d2_only = (
         pair_level[(pair_level["d2_has_tracking"] == 1) & (pair_level["equivalent_has_tracking"] == 0)]
         .groupby("country")
         .size()
-        .rename("n_d2_only_tracking")
+        .rename("n_d2_only_site_tracking")
         .reset_index()
     )
     equivalent_only = (
         pair_level[(pair_level["d2_has_tracking"] == 0) & (pair_level["equivalent_has_tracking"] == 1)]
         .groupby("country")
         .size()
-        .rename("n_equivalent_only_tracking")
+        .rename("n_equivalent_only_site_tracking")
         .reset_index()
     )
 
     # Merge the two asymmetry counts back into one summary table.
-    summary = summary.drop(columns=["n_d2_only_tracking"])
     summary = summary.merge(d2_only, on="country", how="left")
     summary = summary.merge(equivalent_only, on="country", how="left")
-    summary = summary.fillna({"n_d2_only_tracking": 0, "n_equivalent_only_tracking": 0})
-    summary["n_d2_only_tracking"] = summary["n_d2_only_tracking"].astype(int)
-    summary["n_equivalent_only_tracking"] = summary["n_equivalent_only_tracking"].astype(int)
-    summary["pct_d2_only_tracking"] = (summary["n_d2_only_tracking"] / summary["n_pairs"] * 100).round(2)
-    summary["pct_equivalent_only_tracking"] = (summary["n_equivalent_only_tracking"] / summary["n_pairs"] * 100).round(2)
-    summary.to_csv(f"{OUTPUT_DIR}/site_tracking_difference_summary.csv", index=False)
+    summary = summary.fillna({"n_d2_only_site_tracking": 0, "n_equivalent_only_site_tracking": 0})
+    summary["n_d2_only_site_tracking"] = summary["n_d2_only_site_tracking"].astype(int)
+    summary["n_equivalent_only_site_tracking"] = summary["n_equivalent_only_site_tracking"].astype(int)
+    # This summary is intentionally not exported; the site-level asymmetry is no longer kept as a report.
+    return
 
 
 def export_tracker_level_differences(pair_universe, tracker_sets):
-    # Save per-pair tracker asymmetries and top per-country tracker differences for each side.
+    # Save per-pair tracker asymmetries and the country-level comparison summary.
     if pair_universe.empty:
-        pd.DataFrame(columns=["country", "pair_id", "d2_etld", "equivalent_etld", "n_d2_only_trackers", "n_equivalent_only_trackers", "d2_only_trackers", "equivalent_only_trackers"]).to_csv(
+        pd.DataFrame(columns=["country", "site", "n_d2_only_trackers", "n_equivalent_only_trackers", "d2_only_trackers", "equivalent_only_trackers"]).to_csv(
             f"{OUTPUT_DIR}/tracker_level_pair_differences.csv",
             index=False,
         )
-        pd.DataFrame(columns=["country", "n_pairs", "n_pairs_with_d2_only_trackers", "pct_pairs_with_d2_only_trackers", "n_pairs_with_equivalent_only_trackers", "pct_pairs_with_equivalent_only_trackers"]).to_csv(
-            f"{OUTPUT_DIR}/tracker_level_difference_summary.csv",
-            index=False,
-        )
-        pd.DataFrame(columns=["country", "side", "tracker_domain", "n_pairs_present_only", "pct_pairs_present_only"]).to_csv(
-            f"{OUTPUT_DIR}/tracker_level_top10.csv",
+        pd.DataFrame(columns=["country", "pct_exactly_similar_tracking_domains", "pct_completely_disjoint_tracking_domains", "pct_more_tracking_in_d2", "pct_more_tracking_in_equivalent"]).to_csv(
+            f"{OUTPUT_DIR}/trackers_comparaison.csv",
             index=False,
         )
         return
 
     pair_rows = []
-    top_rows = []
     summary_rows = []
 
     for country, country_pairs in pair_universe.groupby("country"):
-        d2_only_counter = {}
-        equivalent_only_counter = {}
-        n_pairs_with_d2_only = 0
-        n_pairs_with_equivalent_only = 0
+        n_pairs = len(country_pairs)
+        n_exactly_similar = 0
+        n_completely_disjoint = 0
+        n_more_in_d2 = 0
+        n_more_in_equivalent = 0
 
         for row in country_pairs.itertuples(index=False):
-            # Compute tracker sets present only on one side of the pair.
             side_sets = tracker_sets[row.pair_id]
-            d2_only = side_sets["D2"] - side_sets["EQUIVALENT"]
-            equivalent_only = side_sets["EQUIVALENT"] - side_sets["D2"]
+            d2_trackers = side_sets["D2"]
+            equivalent_trackers = side_sets["EQUIVALENT"]
+            d2_only = d2_trackers - equivalent_trackers
+            equivalent_only = equivalent_trackers - d2_trackers
 
-            if d2_only:
-                n_pairs_with_d2_only += 1
-            if equivalent_only:
-                n_pairs_with_equivalent_only += 1
+            if d2_trackers == equivalent_trackers:
+                n_exactly_similar += 1
+            if d2_trackers and equivalent_trackers and d2_trackers.isdisjoint(equivalent_trackers):
+                n_completely_disjoint += 1
+            if len(d2_trackers) > len(equivalent_trackers):
+                n_more_in_d2 += 1
+            elif len(equivalent_trackers) > len(d2_trackers):
+                n_more_in_equivalent += 1
 
+            site = normalize_site_pattern(row.d2_etld) or normalize_site_pattern(row.equivalent_etld)
             pair_rows.append(
                 {
                     "country": row.country,
-                    "pair_id": row.pair_id,
-                    "d2_etld": row.d2_etld,
-                    "equivalent_etld": row.equivalent_etld,
+                    "site": site,
                     "n_d2_only_trackers": len(d2_only),
                     "n_equivalent_only_trackers": len(equivalent_only),
                     "d2_only_trackers": "|".join(sorted(d2_only)),
@@ -418,44 +422,19 @@ def export_tracker_level_differences(pair_universe, tracker_sets):
                 }
             )
 
-            for tracker_domain in d2_only:
-                d2_only_counter[tracker_domain] = d2_only_counter.get(tracker_domain, 0) + 1
-            for tracker_domain in equivalent_only:
-                equivalent_only_counter[tracker_domain] = equivalent_only_counter.get(tracker_domain, 0) + 1
-
-        # Summarize how often country pairs show tracker asymmetry at all.
-        n_pairs = len(country_pairs)
         summary_rows.append(
             {
                 "country": country,
-                "n_pairs": n_pairs,
-                "n_pairs_with_d2_only_trackers": n_pairs_with_d2_only,
-                "pct_pairs_with_d2_only_trackers": round((n_pairs_with_d2_only / n_pairs) * 100, 2) if n_pairs else 0.0,
-                "n_pairs_with_equivalent_only_trackers": n_pairs_with_equivalent_only,
-                "pct_pairs_with_equivalent_only_trackers": round((n_pairs_with_equivalent_only / n_pairs) * 100, 2) if n_pairs else 0.0,
+                "pct_exactly_similar_tracking_domains": round((n_exactly_similar / n_pairs) * 100, 2) if n_pairs else 0.0,
+                "pct_completely_disjoint_tracking_domains": round((n_completely_disjoint / n_pairs) * 100, 2) if n_pairs else 0.0,
+                "pct_more_tracking_in_d2": round((n_more_in_d2 / n_pairs) * 100, 2) if n_pairs else 0.0,
+                "pct_more_tracking_in_equivalent": round((n_more_in_equivalent / n_pairs) * 100, 2) if n_pairs else 0.0,
             }
         )
 
-        # Keep the top 10 most common one-sided trackers for each country and side.
-        for side, counter in [("D2", d2_only_counter), ("EQUIVALENT", equivalent_only_counter)]:
-            for tracker_domain, n_pairs_present_only in sorted(counter.items(), key=lambda item: (-item[1], item[0]))[:10]:
-                top_rows.append(
-                    {
-                        "country": country,
-                        "side": side,
-                        "tracker_domain": tracker_domain,
-                        "n_pairs_present_only": n_pairs_present_only,
-                        "pct_pairs_present_only": round((n_pairs_present_only / n_pairs) * 100, 2) if n_pairs else 0.0,
-                    }
-                )
-
     pd.DataFrame(pair_rows).to_csv(f"{OUTPUT_DIR}/tracker_level_pair_differences.csv", index=False)
     pd.DataFrame(summary_rows).sort_values("country").to_csv(
-        f"{OUTPUT_DIR}/tracker_level_difference_summary.csv",
-        index=False,
-    )
-    pd.DataFrame(top_rows).sort_values(["country", "side", "n_pairs_present_only", "tracker_domain"], ascending=[True, True, False, True]).to_csv(
-        f"{OUTPUT_DIR}/tracker_level_top10.csv",
+        f"{OUTPUT_DIR}/trackers_comparaison.csv",
         index=False,
     )
 
@@ -464,10 +443,6 @@ def main():
     # Load mapping, sessions, and requests.
     pair_mapping = load_pair_mapping()
     sessions, all_requests, tracker_requests = load_tables()
-    print(
-        f"[load] mappings={len(pair_mapping):,}, sessions={len(sessions):,}, "
-        f"all_requests={len(all_requests):,}, tracker_requests={len(tracker_requests):,}"
-    )
 
     # Apply the min-10-requests filter before constructing the comparable D2 universe.
     filtered_sessions, filtered_all_requests, filtered_tracker_requests = keep_sessions_with_min_requests(
@@ -488,31 +463,15 @@ def main():
         filtered_tracker_requests["session_id"].isin(paired_session_ids)
     ].copy()
 
-    print(
-        f"[universe] pairs={len(pair_universe):,}, paired_sessions={len(paired_sessions):,}, "
-        f"countries={pair_universe['country'].nunique():,}"
-    )
-
     # Build tracker presence at the pair/side level for D2 vs equivalent comparisons.
-    pair_tracking = build_pair_tracking(paired_sessions, paired_tracker_requests)
+    pair_tracking = build_pair_tracking(paired_sessions, pair_universe, paired_tracker_requests)
     tracker_sets = build_pair_tracker_sets(pair_universe, pair_tracking)
 
     # Export site-level and tracker-level summaries.
-    save_pair_universe(pair_universe)
-    export_overall_numbers(pair_universe)
     pair_level = export_tracking_prevalence(pair_universe, tracker_sets)
     export_site_tracking_difference_summary(pair_level)
     export_tracker_level_differences(pair_universe, tracker_sets)
 
-    # Reuse the same inclusion-chain debugging logic used for D1, but on D2/equivalent pairs.
-    export_d2_session_level_deviation_analysis(
-        pair_universe,
-        paired_sessions,
-        paired_all_requests,
-        paired_tracker_requests,
-        tracker_sets,
-        OUTPUT_DIR,
-    )
 
 
 if __name__ == "__main__":

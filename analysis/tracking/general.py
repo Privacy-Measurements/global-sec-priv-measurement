@@ -13,34 +13,18 @@ if REPO_ROOT not in sys.path:
 
 from analysis.utils.urls import extract_domain_from_url
 from analysis.utils.sessions import filter_global_to_common_etlds
-from analysis.utils.similarity import build_value_sets_by_group, compute_pairwise_similarity_rows, compute_similarity_matrices
-from analysis.tracking.country_specific import run_country_specific_outputs
+from analysis.tracking.country_specific import compute_country_specific_top_trackers
 
-
-# ============================================================
-# CONFIG
-# ============================================================
 
 OUTPUT_DIR = "reports_tracking"
-SIMILARITY_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "similarity")
-COUNTRY_SPECIFIC_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "specific_to_each_country")
-TOP_TRACKERS_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "top_trackers")
-D3_COUNTRY_DATASETS_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "d3_country_datasets")
 GROUP_COLS = ["etld", "category", "location"]
 countries = ["ALGERIA", "GERMANY", "INDIA", "UAE", "USA"]
 TOP_K = 10
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-os.makedirs(SIMILARITY_OUTPUT_DIR, exist_ok=True)
-os.makedirs(COUNTRY_SPECIFIC_OUTPUT_DIR, exist_ok=True)
-os.makedirs(TOP_TRACKERS_OUTPUT_DIR, exist_ok=True)
-os.makedirs(D3_COUNTRY_DATASETS_OUTPUT_DIR, exist_ok=True)
 
 
 
-# ============================================================
-# DATA LOADING
-# ============================================================
 
 # Load sessions and third_party tracking requests from the database.
 def load_tables():
@@ -65,8 +49,7 @@ def load_tables():
         WHERE 
           location NOT LIKE '%%VPN'
           AND (is_cloudflare IS NULL OR is_cloudflare = 0)
-          AND
-          (etld_url_rel IS NULL OR etld_url_rel <> 'cross-site')
+          AND (etld_url_rel IS NULL OR etld_url_rel <> 'cross-site')
     """, engine)
 
     requests = pd.read_sql("""
@@ -82,21 +65,25 @@ def load_tables():
             WHERE 
                  location NOT LIKE '%%VPN'
                  AND (is_cloudflare IS NULL OR is_cloudflare = 0)
-                 AND
-                 (etld_url_rel IS NULL OR etld_url_rel <> 'cross-site')
+                 AND (etld_url_rel IS NULL OR etld_url_rel <> 'cross-site')
         )
     """, engine)
 
     return sessions, requests
 
 
-# Build a site-level tracker-presence table.
 # Output format: one row per unique (etld, category, location, tracker_domain)
 def build_site_tracking_table(sessions, requests):
     """
-    One row = (etld, category, location, tracker_domain)
+    For each site (etld, category, location):
+      1. Group by access_id
+      2. For each access_id, determine which trackers it contacts
+      3. Keep only trackers that appear in ALL access_ids
+    
+    Output: One row per (etld, category, location, tracker_domain)
+            where tracker_domain appears consistently across ALL access_ids for that site
     """
-
+    
     df = requests.merge(
         sessions,
         on="session_id",
@@ -106,12 +93,39 @@ def build_site_tracking_table(sessions, requests):
     df["tracker_domain"] = df["request_url"].apply(extract_domain_from_url)
     df = df.dropna(subset=["tracker_domain"])
 
-    # Reduce to site-level presence
-    df = df.drop_duplicates(
-        subset=["etld", "category", "location", "tracker_domain"]
-    )
-
-    return df[["etld", "category", "location", "tracker_domain"]]
+    rows = []
+    
+    for (etld, category, location), site_data in df.groupby(["etld", "category", "location"]):
+        access_ids = site_data["access_id"].unique()
+        
+        # For each access_id, get the set of trackers it contacts
+        trackers_by_access_id = {}
+        for access_id in access_ids:
+            access_data = site_data[site_data["access_id"] == access_id]
+            trackers_by_access_id[access_id] = set(access_data["tracker_domain"].unique())
+        
+        # Find intersection: trackers present in ALL access_ids
+        if not trackers_by_access_id:
+            continue
+        
+        tracker_sets = list(trackers_by_access_id.values())
+        if all(tracker_sets):  # All access_ids have at least one tracker
+            common_trackers = set.intersection(*tracker_sets)
+            for tracker in common_trackers:
+                rows.append({
+                    "etld": etld,
+                    "category": category,
+                    "location": location,
+                    "tracker_domain": tracker,
+                })
+    
+    if not rows:
+        return pd.DataFrame(columns=["etld", "category", "location", "tracker_domain"])
+    
+    result_df = pd.DataFrame(rows)
+    result_df = result_df[["etld", "category", "location", "tracker_domain"]]
+    result_df.to_csv(os.path.join(OUTPUT_DIR, "site_level_tracking.csv"), index=False)
+    return result_df
 
 # Compute share of sites with at least one third-party tracker.
 def compute_tracking_prevalence(sessions, site_tracking):
@@ -245,13 +259,11 @@ def compute_total_distinct_trackers(site_tracking):
     return total
 
 
-# Write combined country+category summary table.
 def write_tracking_summary(prevalence, avg_trackers, total_trackers):
     categories = [
         "global",
         "country_coded",
         "country_specific",
-        "D2_EQUIVALENT",
         "overall (D1/D2/D3)",
     ]
 
@@ -280,69 +292,8 @@ def write_tracking_summary(prevalence, avg_trackers, total_trackers):
     )
 
 
-# Write overall and per-catalog similarity outputs.
-def _format_pairwise_rows_for_output(pair_rows):
-    # Convert generic set-similarity keys into explicit country-pair columns.
-    return [
-        {
-            "country_a": row["group_a"],
-            "country_b": row["group_b"],
-            "shared_count": row["shared_count"],
-            "union_count": row["union_count"],
-            "jaccard_pct": row["jaccard_pct"],
-            "overlap_coefficient_pct": row["overlap_coefficient_pct"],
-        }
-        for row in pair_rows
-    ]
-
-# Write pairwise similarity rows and all similarity matrices for a single labeled subset
-def _write_similarity_outputs_for_label(value_sets, label):
-    pair_rows = compute_pairwise_similarity_rows(value_sets, countries)
-    pair_rows = _format_pairwise_rows_for_output(pair_rows)
-    pd.DataFrame(pair_rows).to_csv(
-        f"{SIMILARITY_OUTPUT_DIR}/pairwise_similarity_jaccard_pct_and_overlap_coefficient_{label}.csv",
-        index=False,
-    )
-
-    # Build and write intersection, Jaccard, and overlap coefficient matrices.
-    intersection_count_matrix, jaccard_matrix, overlap_coefficient_matrix = compute_similarity_matrices(
-        value_sets,
-        countries,
-        index_name="country",
-    )
-    intersection_count_matrix.to_csv(
-        f"{SIMILARITY_OUTPUT_DIR}/intersection_count_matrix_{label}.csv"
-    )
-    jaccard_matrix.to_csv(
-        f"{SIMILARITY_OUTPUT_DIR}/jaccard_pct_matrix_{label}.csv"
-    )
-    overlap_coefficient_matrix.to_csv(f"{SIMILARITY_OUTPUT_DIR}/overlap_coefficient_matrix_{label}.csv")
-
-# Write Jaccard and overlap-coefficient similarity outputs for sets of trackers across catalogs and countries
-def write_similarity_outputs(site_tracking):
-    # Define the subsets: D1, D2, D3, D2_EQUIVALENT, and overall (D1/D2/D3).
-    labeled_subsets = {
-        "overall_d1_d2_d3": site_tracking[site_tracking["category"].isin(["global", "country_coded", "country_specific"])].copy(),
-        "d1": site_tracking[site_tracking["category"] == "global"].copy(),
-        "d2": site_tracking[site_tracking["category"] == "country_coded"].copy(),
-        "d3": site_tracking[site_tracking["category"] == "country_specific"].copy(),
-        "d2_equivalent": site_tracking[site_tracking["category"] == "D2_EQUIVALENT"].copy(),
-    }
-
-    for label, subset_df in labeled_subsets.items():
-        # Example output: {"ALGERIA": {"google-analytics.com", "doubleclick.net"}, ...}
-        value_sets = build_value_sets_by_group(
-            subset_df,
-            group_col="location",
-            value_col="tracker_domain",
-        )
-        _write_similarity_outputs_for_label(value_sets, label)
-
 # Build top tracker list and matrix for a given data subset.
-def compute_top_trackers_for_subset(
-    sessions,
-    site_tracking,
-):
+def compute_top_trackers_for_subset(sessions, site_tracking):
 
     denominators = (
         sessions[["location", "etld"]]
@@ -412,114 +363,30 @@ def compute_top_trackers_for_subset(
 
     return list_df, matrix_df
 
-# Write top tracker outputs for overall and each bucket.
-def write_top_tracker_outputs(
-    sessions,
-    site_tracking,
-):
-    bucket_map = {
-        "overall_d1_d2_d3": (
-            sessions[sessions["category"].isin(["global", "country_coded", "country_specific"])].copy(),
-            site_tracking[site_tracking["category"].isin(["global", "country_coded", "country_specific"])].copy(),
-        ),
-        "d1": (
-            sessions[sessions["category"] == "global"].copy(),
-            site_tracking[site_tracking["category"] == "global"].copy(),
-        ),
-        "d2": (
-            sessions[sessions["category"] == "country_coded"].copy(),
-            site_tracking[site_tracking["category"] == "country_coded"].copy(),
-        ),
-        "d3": (
-            sessions[sessions["category"] == "country_specific"].copy(),
-            site_tracking[site_tracking["category"] == "country_specific"].copy(),
-        ),
-        "d2_equivalent": (
-            sessions[sessions["category"] == "D2_EQUIVALENT"].copy(),
-            site_tracking[site_tracking["category"] == "D2_EQUIVALENT"].copy(),
-        ),
-    }
+# Write only the overall top-tracker matrix for the D1/D2/D3 aggregate.
+def write_top_tracker_outputs(sessions, site_tracking):
+    subset_sessions = sessions[sessions["category"].isin(["global", "country_coded", "country_specific"])].copy()
+    subset_tracking = site_tracking[site_tracking["category"].isin(["global", "country_coded", "country_specific"])].copy()
 
-    for bucket_name, (bucket_sessions, bucket_tracking) in bucket_map.items():
-        list_df, matrix_df = compute_top_trackers_for_subset(
-            bucket_sessions,
-            bucket_tracking,
-        )
-        list_df.to_csv(
-            f"{TOP_TRACKERS_OUTPUT_DIR}/top_trackers_{bucket_name}.csv",
-            index=False,
-        )
-        matrix_df.to_csv(
-            f"{TOP_TRACKERS_OUTPUT_DIR}/top_trackers_matrix_{bucket_name}.csv",
-            index=False,
-        )
-
-
-def write_d3_country_datasets(sessions, requests):
-    """Write one D3 CSV per country with unique tracker counts per (location, site)."""
-    d3_sessions = sessions[sessions["category"] == "country_specific"].copy()
-    if d3_sessions.empty:
-        for country in countries:
-            out_path = os.path.join(D3_COUNTRY_DATASETS_OUTPUT_DIR, f"d3_{country}.csv")
-            pd.DataFrame(columns=["location", "site", "n_trackers"]).to_csv(out_path, index=False)
-        return
-
-    d3_keys = (
-        d3_sessions[["session_id", "location", "etld"]]
-        .drop_duplicates()
-        .rename(columns={"etld": "site"})
+    _, matrix_df = compute_top_trackers_for_subset(
+        subset_sessions,
+        subset_tracking,
     )
-
-    # Build tracker-domain lists per key by merging requests across all corresponding sessions.
-    d3_trackers = requests.merge(d3_keys, on="session_id", how="inner")
-    d3_trackers["tracker_domain"] = d3_trackers["request_url"].apply(extract_domain_from_url)
-    d3_trackers = d3_trackers.dropna(subset=["tracker_domain"])
-    d3_trackers = d3_trackers[d3_trackers["tracker_domain"].astype(str).str.len() > 0]
-
-    grouped = (
-        d3_trackers
-        .groupby(["location", "site"], as_index=False)["tracker_domain"]
-        .agg(lambda vals: sorted(set(vals)))
+    matrix_df.to_csv(
+        f"{OUTPUT_DIR}/top_trackers_d1_d2_d3.csv",
+        index=False,
     )
-    grouped["n_trackers"] = grouped["tracker_domain"].apply(len)
-    grouped = grouped[["location", "site", "n_trackers"]]
-
-    # Keep zero rows for retained D3 location/site combinations without tracker observations.
-    all_keys = d3_keys[["location", "site"]].drop_duplicates()
-    d3_counts = all_keys.merge(
-        grouped,
-        on=["location", "site"],
-        how="left",
-    )
-    d3_counts["n_trackers"] = d3_counts["n_trackers"].fillna(0).astype(int)
-
-    for country in countries:
-        country_df = (
-            d3_counts[d3_counts["location"] == country]
-            .sort_values(["site"])
-            .reset_index(drop=True)
-        )
-        out_path = os.path.join(D3_COUNTRY_DATASETS_OUTPUT_DIR, f"d3_{country}.csv")
-        country_df.to_csv(out_path, index=False)
-
 
 
 # Run the full tracking analysis pipeline.
 def main():
 
-    #reading crawl_sessions + third-party tracking requests
     sessions, requests = load_tables()
 
     # Build a site-level tracker presence table.
     # One row per unique (etld, category, location, tracker_domain)
-    site_tracking = build_site_tracking_table(
-        sessions, requests
-    )
-
-    # Restrict global data to sites present in all five countries.
-    sessions, site_tracking = filter_global_to_common_etlds(
-        sessions, site_tracking
-    )
+    site_tracking = build_site_tracking_table(sessions, requests)
+    sessions, site_tracking = filter_global_to_common_etlds(sessions, site_tracking)
 
     # Aggregate base tables used by summary writers.
     prevalence = compute_tracking_prevalence(sessions, site_tracking)
@@ -527,22 +394,18 @@ def main():
     total_trackers = compute_total_distinct_trackers(site_tracking)
 
     # Run each output writer separately to keep responsibilities small.
-    write_tracking_summary(
-        prevalence,
-        avg_trackers,
-        total_trackers,
-    )
-    
-    write_similarity_outputs(site_tracking)
-    run_country_specific_outputs(
-        sessions,
-        site_tracking,
-        COUNTRY_SPECIFIC_OUTPUT_DIR,
-        countries,
-        TOP_K,
+    write_tracking_summary(prevalence, avg_trackers, total_trackers)
+
+    overall_sessions = sessions[sessions["category"].isin(["global", "country_coded", "country_specific"])].copy()
+    overall_tracking = site_tracking[site_tracking["category"].isin(["global", "country_coded", "country_specific"])].copy()
+
+    overall_top_trackers = compute_country_specific_top_trackers(overall_sessions, overall_tracking, countries, None)
+
+    overall_top_trackers.to_csv(
+        os.path.join(OUTPUT_DIR, "top_country_specific_trackers_d1_d2_d3.csv"),
+        index=False,
     )
     write_top_tracker_outputs(sessions, site_tracking)
-    write_d3_country_datasets(sessions, requests)
 
 if __name__ == "__main__":
     main()

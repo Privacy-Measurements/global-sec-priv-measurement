@@ -1,0 +1,13 @@
+metric,category,ALGERIA,GERMANY,INDIA,UAE,USA
+tracking_prevalence_pct,global,71.43,70.18,68.26,71.21,70.6
+tracking_prevalence_pct,country_coded,73.33,74.11,71.33,76.03,67.14
+tracking_prevalence_pct,country_specific,34.99,50.75,36.14,65.03,55.39
+tracking_prevalence_pct,overall (D1/D2/D3),60.72,62.12,51.59,67.88,62.71
+avg_num_trackers_per_site,global,8.48,9.54,6.91,11.38,9.39
+avg_num_trackers_per_site,country_coded,5.0,6.87,4.95,8.96,7.25
+avg_num_trackers_per_site,country_specific,2.42,5.79,3.71,5.01,3.77
+avg_num_trackers_per_site,overall (D1/D2/D3),7.42,7.56,5.52,7.9,6.8
+total_num_distinct_trackers,global,1694.0,1769.0,1517.0,1828.0,1765.0
+total_num_distinct_trackers,country_coded,52.0,890.0,386.0,299.0,212.0
+total_num_distinct_trackers,country_specific,115.0,901.0,328.0,428.0,549.0
+total_num_distinct_trackers,overall (D1/D2/D3),1726.0,2617.0,1711.0,2029.0,1984.0
